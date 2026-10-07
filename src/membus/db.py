@@ -94,11 +94,14 @@ class Database:
             conn.close()
 
     @contextlib.contextmanager
-    def transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+    def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
         """Open a write transaction.
 
-        BEGIN IMMEDIATE is used for read-modify-write flows that must reserve the
-        writer slot before reading state that will be mutated.
+        MemBus defaults all application write transactions to BEGIN IMMEDIATE.
+        SQLite only permits one writer anyway; reserving the writer slot at the
+        transaction boundary avoids deferred-transaction lock-upgrade races
+        across independent agent processes. Pass immediate=False only for a
+        deliberately deferred transaction with no read-to-write upgrade risk.
         """
 
         conn = self.connect()
