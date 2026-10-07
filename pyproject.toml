@@ -14,9 +14,16 @@ authors = [
 dependencies = []
 
 [project.optional-dependencies]
+mcp = [
+  "mcp>=2,<3",
+]
 dev = [
   "pytest>=8",
+  "mcp>=2,<3",
 ]
+
+[project.scripts]
+membus-mcp = "membus.adapters.mcp_server:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
