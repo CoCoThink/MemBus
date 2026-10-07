@@ -245,24 +245,36 @@ Notes:
 
 Use an ordinary connection without manually opening a write transaction.
 
-### 6.2 Independent insert
+### 6.2 Application writes
 
-A normal transaction is sufficient.
-
-### 6.3 Read-modify-write
-
-Operations that must inspect the current row before deciding a mutation use:
+All application-level write transactions use:
 
 ```sql
 BEGIN IMMEDIATE;
 ```
 
-This reserves the writer slot early and avoids deferred transaction lock-upgrade races.
+This is an empirically verified requirement, not only a precaution. A
+multi-process stress test showed that deferred `BEGIN` can allow several
+processes to enter transactions and then fail immediately while upgrading to a
+write lock at the first `INSERT`, even with a busy timeout configured.
+
+SQLite permits only one writer regardless, so acquiring the writer reservation
+at transaction start does not remove useful write parallelism. Instead it moves
+contention to a point where `busy_timeout` and bounded retry can queue writers
+predictably.
+
+### 6.3 Read-modify-write
+
+Read-modify-write operations also use `BEGIN IMMEDIATE`, for the same reason,
+and retain the writer reservation while inspecting and mutating state.
 
 Examples:
 
+- create plus event-ledger append
 - update with old-value audit payload
 - logical delete with idempotency check
+- alias mutation
+- retrieval-log append
 - future compare-and-supersede
 
 ### 6.4 Event atomicity
