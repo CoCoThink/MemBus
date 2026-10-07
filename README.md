@@ -110,6 +110,42 @@ memory_search
 memory_search_many
 ```
 
+## CLI
+
+The core has a standard-library CLI in addition to the MCP adapter.
+
+```bash
+# initialize / verify a store
+membus --db ./memory.db init
+
+# explicit durable memory
+membus --db ./memory.db put \
+  --title "Do not edit generated client" \
+  --content "generated/client.ts is generated from OpenAPI." \
+  --memory-type procedure \
+  --scope repo \
+  --project payment \
+  --repo payment-api
+
+# scoped lexical search with score explanation
+membus --db ./memory.db search "generated/client.ts" \
+  --project payment \
+  --repo payment-api \
+  --explain
+
+# consistent WAL-safe backup
+membus --db ./memory.db backup ./backup.db
+```
+
+Run the isolated golden retrieval evaluation:
+
+```bash
+membus eval evals/golden_v1.json \
+  --min-recall-5 0.95 \
+  --min-recall-10 0.95 \
+  --max-wrong-scope-rate 0.0
+```
+
 ## Current implementation status
 
 Implemented baseline:
@@ -130,6 +166,25 @@ Implemented baseline:
 - MCP v2 stdio adapter
 - GitHub Actions on Python 3.11 and 3.12
 - in-memory MCP round-trip tests
+- schema migration framework (current schema remains v1)
+- reproducible isolated Golden Retrieval Evaluation
+- CLI for CRUD/search/backup/evaluation
+- multi-process WAL writer stress test
+- CI quality gates for both unit tests and retrieval metrics
+
+Current initial golden baseline (18 deliberately simple coding-memory queries):
+
+```text
+Recall@5              1.000
+Recall@10             1.000
+MRR                   1.000
+Wrong-scope hit rate  0.000
+Zero-result rate      0.000
+CI P95 search latency ~1.5 ms
+```
+
+These numbers are a regression baseline, not a claim about real-world retrieval
+quality. The dataset is expected to become harder as real misses are added.
 
 Still deliberately absent:
 
@@ -148,3 +203,4 @@ See:
 - [Architecture](docs/architecture.md)
 - [V1 technical specification](docs/v1-technical-spec.md)
 - [Open-source design review](docs/open-source-review.md)
+- [Retrieval evaluation](docs/evaluation.md)
