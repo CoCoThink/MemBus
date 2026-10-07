@@ -270,3 +270,53 @@ def test_retrieval_logging_can_be_metadata_only(tmp_path: Path) -> None:
     assert row is not None
     assert row["query"] is None
     assert row["candidate_count"] >= 1
+
+
+def test_parent_workspace_mismatch_excludes_same_named_project(
+    service: MemoryService,
+) -> None:
+    wrong = service.put(
+        MemoryCreate(
+            content="Payment project in personal workspace uses SQLite.",
+            memory_type="fact",
+            scope="project",
+            workspace="personal",
+            project="payment",
+        )
+    )
+    right = service.put(
+        MemoryCreate(
+            content="Payment project in work workspace uses PostgreSQL.",
+            memory_type="fact",
+            scope="project",
+            workspace="work",
+            project="payment",
+        )
+    )
+
+    results = service.search(
+        SearchRequest(
+            query="Payment project",
+            context=SearchContext(workspace="work", project="payment"),
+        )
+    )
+
+    ids = [result.memory.id for result in results]
+    assert right.id in ids
+    assert wrong.id not in ids
+
+
+def test_search_many_accepts_public_maximum_limit(service: MemoryService) -> None:
+    service.put(
+        MemoryCreate(
+            content="PostgreSQL connection pool",
+            memory_type="fact",
+            scope="global",
+        )
+    )
+
+    results = service.search_many(
+        SearchManyRequest.from_queries(["PostgreSQL"], limit=100)
+    )
+
+    assert len(results) == 1
