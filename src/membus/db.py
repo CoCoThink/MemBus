@@ -35,12 +35,12 @@ class Database:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
-        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def initialize(self) -> None:
         with contextlib.closing(self.connect()) as conn:
+            self._ensure_wal(conn)
             version = migrate(conn)
             if version != CURRENT_SCHEMA_VERSION:
                 raise RuntimeError(
@@ -64,6 +64,26 @@ class Database:
                     "MemBus schema is incomplete; missing: "
                     + ", ".join(sorted(missing))
                 )
+
+    def _ensure_wal(self, conn: sqlite3.Connection) -> None:
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(self.begin_retry_attempts):
+            try:
+                row = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+                if row is None or str(row[0]).casefold() != "wal":
+                    raise RuntimeError("SQLite refused WAL journal mode")
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                last_error = exc
+                if attempt + 1 >= self.begin_retry_attempts:
+                    break
+                time.sleep(0.02 * (2**attempt))
+
+        assert last_error is not None
+        raise last_error
 
     @contextlib.contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
