@@ -59,9 +59,88 @@ MemBus/
 └── README.md
 ```
 
-## Status
+## Quick start
 
-MemBus is at the initial architecture and V1 implementation stage. The first milestone is a reliable, inspectable local memory core before any semantic/vector layer is introduced.
+Core only:
+
+```bash
+python -m pip install -e .
+```
+
+With the MCP adapter:
+
+```bash
+python -m pip install -e '.[mcp]'
+```
+
+Run the local stdio MCP server:
+
+```bash
+membus-mcp
+```
+
+By default the canonical database is:
+
+```text
+~/.membus/memory.db
+```
+
+Override it with:
+
+```bash
+MEMBUS_DB=/path/to/memory.db membus-mcp
+```
+
+Retrieval logging is off by default so reads do not become writes. For development/auditing:
+
+```bash
+MEMBUS_RETRIEVAL_LOG_MODE=metadata-only membus-mcp
+# or
+MEMBUS_RETRIEVAL_LOG_MODE=full membus-mcp
+```
+
+The current MCP v2 adapter exposes exactly six tools:
+
+```text
+memory_put
+memory_get
+memory_update
+memory_delete
+memory_search
+memory_search_many
+```
+
+## Current implementation status
+
+Implemented baseline:
+
+- SQLite canonical store
+- WAL + busy timeout
+- explicit transactions and `BEGIN IMMEDIATE` for read-modify-write paths
+- consistent SQLite backup API
+- FTS5/BM25 lexical candidates
+- exact identifier/substring candidate path
+- deterministic aliases
+- workspace/project/repo/branch scope isolation
+- explainable ranking
+- mutation event ledger
+- optional retrieval logs
+- logical deletion
+- multi-query fusion
+- MCP v2 stdio adapter
+- GitHub Actions on Python 3.11 and 3.12
+- in-memory MCP round-trip tests
+
+Still deliberately absent:
+
+- embeddings/vector database
+- LLM query rewrite/reranking
+- automatic memory extraction
+- autonomous consolidation
+- graph database
+- distributed storage
+
+These will only be introduced against measured retrieval or operational failures.
 
 See:
 
