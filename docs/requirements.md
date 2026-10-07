@@ -274,7 +274,7 @@ Committed canonical writes MUST survive process restart.
 
 ### NFR-003 Concurrent clients
 
-Multiple agent processes MUST be able to read concurrently. Write behavior MUST use SQLite WAL mode, explicit transaction boundaries, busy timeout/retry, and `BEGIN IMMEDIATE` where a read-modify-write operation requires early writer reservation.
+Multiple agent processes MUST be able to read concurrently. Write behavior MUST use SQLite WAL mode, explicit transaction boundaries, busy timeout/retry, and `BEGIN IMMEDIATE` for application write transactions. Multi-process stress testing demonstrated that deferred transactions can fail during lock upgrade even for apparently independent inserts.
 
 ### NFR-004 Inspectability
 
