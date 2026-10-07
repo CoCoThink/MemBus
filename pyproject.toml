@@ -23,6 +23,7 @@ dev = [
 ]
 
 [project.scripts]
+membus = "membus.cli:entrypoint"
 membus-mcp = "membus.adapters.mcp_server:main"
 
 [tool.setuptools]
