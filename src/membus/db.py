@@ -8,8 +8,7 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-
-SUPPORTED_SCHEMA_VERSION = 1
+from .migrations import CURRENT_SCHEMA_VERSION, migrate
 
 
 class Database:
@@ -41,35 +40,29 @@ class Database:
         return conn
 
     def initialize(self) -> None:
-        schema_path = Path(__file__).with_name("schema.sql")
-        schema = schema_path.read_text(encoding="utf-8")
-
         with contextlib.closing(self.connect()) as conn:
-            try:
-                conn.executescript(schema)
-            except sqlite3.OperationalError as exc:
-                if "fts5" in str(exc).lower():
-                    raise RuntimeError(
-                        "This SQLite build does not provide FTS5, which MemBus V1 requires."
-                    ) from exc
-                raise
-
-            row = conn.execute(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("MemBus schema exists without schema_version metadata")
-
-            version = int(row["value"])
-            if version > SUPPORTED_SCHEMA_VERSION:
+            version = migrate(conn)
+            if version != CURRENT_SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"Database schema {version} is newer than supported "
-                    f"version {SUPPORTED_SCHEMA_VERSION}"
+                    f"MemBus expected schema {CURRENT_SCHEMA_VERSION}, found {version}"
                 )
-            if version < SUPPORTED_SCHEMA_VERSION:
+
+            # Lightweight startup verification: fail early if the canonical
+            # table or FTS index disappeared even when schema_meta survived.
+            required = {"memories", "memory_fts", "memory_events"}
+            rows = conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE name IN ('memories', 'memory_fts', 'memory_events')
+                """
+            ).fetchall()
+            found = {str(row["name"]) for row in rows}
+            missing = required - found
+            if missing:
                 raise RuntimeError(
-                    f"Database schema {version} requires a migration to "
-                    f"{SUPPORTED_SCHEMA_VERSION}; migrations are not yet available"
+                    "MemBus schema is incomplete; missing: "
+                    + ", ".join(sorted(missing))
                 )
 
     @contextlib.contextmanager
@@ -123,11 +116,7 @@ class Database:
         raise last_error
 
     def backup(self, destination: str | Path) -> Path:
-        """Create a transactionally consistent SQLite backup.
-
-        This intentionally uses sqlite3.Connection.backup() rather than copying
-        only the main database file while WAL mode may contain uncheckpointed data.
-        """
+        """Create a transactionally consistent SQLite backup."""
 
         destination_path = Path(destination)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
