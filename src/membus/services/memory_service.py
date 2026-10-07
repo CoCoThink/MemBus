@@ -220,7 +220,7 @@ class MemoryService:
                 query=query,
                 context=request.context,
                 types=request.types,
-                limit=max(request.limit * 5, 25),
+                limit=min(100, max(request.limit * 5, 25)),
                 explain=True,
                 include_deleted=request.include_deleted,
             )
