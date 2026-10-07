@@ -49,6 +49,33 @@ def scope_affinity(memory: Memory, context: SearchContext) -> ScopeDecision:
     except ValueError:
         return ScopeDecision(False, 0.0, "unknown memory scope")
 
+    # Parent context is a correctness boundary. This prevents two projects with
+    # the same name in different workspaces (or two repos in different
+    # projects) from leaking into one another when both sides provide the
+    # disambiguating parent field.
+    if (
+        memory.workspace is not None
+        and context.workspace is not None
+        and memory.workspace != context.workspace
+    ):
+        return ScopeDecision(False, 0.0, "workspace mismatch")
+
+    if (
+        scope in {Scope.PROJECT, Scope.REPO, Scope.BRANCH}
+        and memory.project is not None
+        and context.project is not None
+        and memory.project != context.project
+    ):
+        return ScopeDecision(False, 0.0, "project mismatch")
+
+    if (
+        scope in {Scope.REPO, Scope.BRANCH}
+        and memory.repo is not None
+        and context.repo is not None
+        and memory.repo != context.repo
+    ):
+        return ScopeDecision(False, 0.0, "repo mismatch")
+
     if scope is Scope.GLOBAL:
         return ScopeDecision(True, 0.40, "global memory")
 
