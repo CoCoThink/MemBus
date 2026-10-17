@@ -132,11 +132,10 @@ class MemoryService:
         canonical = normalize_text(canonical)
         if not alias or not canonical:
             raise ValueError("alias and canonical must be non-empty")
-        self.repository.put_alias(alias, canonical, created_at=_utcnow())
+        self.repository.put_alias(alias, canonical)
 
     def search(self, request: SearchRequest) -> list[SearchResult]:
-        results, _ = self._search_core(request)
-        return results
+        return self._search_core(request)
 
     def search_many(self, request: SearchManyRequest) -> list[SearchResult]:
         if not request.queries:
@@ -147,7 +146,7 @@ class MemoryService:
         merged: dict[str, SearchResult] = {}
 
         for query in request.queries:
-            results, _ = self._search_core(
+            results = self._search_core(
                 SearchRequest(
                     query=query,
                     context=request.context,
@@ -171,10 +170,10 @@ class MemoryService:
     def _search_core(
         self,
         request: SearchRequest,
-    ) -> tuple[list[SearchResult], int]:
+    ) -> list[SearchResult]:
         query = normalize_text(request.query)
         if not query:
-            return [], 0
+            return []
         if not (1 <= request.limit <= 100):
             raise ValueError("limit must be between 1 and 100")
 
@@ -266,7 +265,7 @@ class MemoryService:
             key=lambda result: (result.score, result.memory.updated_at),
             reverse=True,
         )
-        return ranked[: request.limit], len(candidates)
+        return ranked[: request.limit]
 
     @staticmethod
     def _normalize_types(types: tuple[str, ...]) -> tuple[str, ...]:
