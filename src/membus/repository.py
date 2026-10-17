@@ -176,19 +176,14 @@ class MemoryRepository:
             SELECT alias, canonical
             FROM aliases
             WHERE alias IN ({placeholders})
-               OR canonical IN ({placeholders})
         """
-        params = [*normalized, *normalized]
         result: dict[str, set[str]] = {token: set() for token in normalized}
 
         with self.db.connection() as conn:
-            for row in conn.execute(sql, params):
-                alias = str(row["alias"]).casefold()
-                canonical = str(row["canonical"]).casefold()
-                if alias in result:
-                    result[alias].add(canonical)
-                if canonical in result:
-                    result[canonical].add(alias)
+            for row in conn.execute(sql, normalized):
+                result[str(row["alias"]).casefold()].add(
+                    str(row["canonical"]).casefold()
+                )
 
         return result
 
