@@ -63,7 +63,7 @@ then FTS BM25 order
 Top-K
 ```
 
-A row is excluded only when both sides provide a context dimension and values differ.
+A row is eligible only when every non-empty context value stored on the memory is present and equal in the query. Equivalently, `memory_context ⊆ query_context`.
 
 There is no ranking layer, numeric score, scope bonus, recency signal, title boost, explain mode, or multi-query fusion.
 
