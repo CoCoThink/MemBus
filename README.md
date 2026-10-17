@@ -20,6 +20,7 @@ Its purpose is to keep long-term knowledge and memory under the user's control, 
 V1 intentionally stays small:
 
 - SQLite canonical store
+- compact 14-field canonical memory row with no speculative scoring/lifecycle fields
 - WAL mode and explicit transaction boundaries
 - FTS5 full-text retrieval
 - memory scope and type metadata
@@ -155,7 +156,7 @@ Implemented baseline:
 
 - SQLite canonical store
 - WAL + busy timeout
-- explicit transactions and `BEGIN IMMEDIATE` for read-modify-write paths
+- explicit transactions and `BEGIN IMMEDIATE` for all application writes
 - consistent SQLite backup API
 - FTS5/BM25 lexical candidates
 - exact identifier/substring candidate path
@@ -165,11 +166,11 @@ Implemented baseline:
 - mutation event ledger
 - optional retrieval logs
 - logical deletion
-- multi-query fusion
+- multi-query candidate union with best-score selection
 - MCP v2 stdio adapter
 - GitHub Actions on Python 3.11 and 3.12
 - in-memory MCP round-trip tests
-- schema migration framework (current schema remains v1)
+- schema migration framework (current schema v2, including tested v1 -> v2 contraction)
 - reproducible isolated Golden Retrieval Evaluation
 - CLI for CRUD/search/backup/evaluation
 - multi-process WAL writer stress test
@@ -185,7 +186,7 @@ Recall@10             1.000
 MRR                   1.000
 Wrong-scope hit rate  0.000
 Zero-result rate      0.000
-CI P95 search latency ~1.5 ms
+CI P95 search latency ~1.4 ms
 ```
 
 These numbers are a regression baseline, not a claim about real-world retrieval
