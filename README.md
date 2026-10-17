@@ -133,6 +133,9 @@ membus --db ./memory.db search "generated/client.ts" \
   --repo payment-api \
   --explain
 
+# application/data health
+membus --db ./memory.db doctor
+
 # consistent WAL-safe backup
 membus --db ./memory.db backup ./backup.db
 ```
@@ -171,6 +174,8 @@ Implemented baseline:
 - CLI for CRUD/search/backup/evaluation
 - multi-process WAL writer stress test
 - CI quality gates for both unit tests and retrieval metrics
+- `membus doctor` application/data health checks
+- Secure MCP Tunnel stdio deployment runbook
 
 Current initial golden baseline (18 deliberately simple coding-memory queries):
 
@@ -205,3 +210,4 @@ See:
 - [Open-source design review](docs/open-source-review.md)
 - [Retrieval evaluation](docs/evaluation.md)
 - [ChatGPT Secure MCP Tunnel integration](docs/chatgpt-secure-tunnel.md)
+- [Secure MCP Tunnel deployment runbook](docs/secure-tunnel-deployment.md)
