@@ -1,4 +1,4 @@
-"""Minimal MemBus core: canonical SQLite memory plus lexical retrieval."""
+"""Minimal MemBus core: SQLite memory plus lexical retrieval."""
 
 from __future__ import annotations
 
@@ -7,33 +7,70 @@ import re
 import sqlite3
 import time
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 
+_BUSY_TIMEOUT_MS = 5_000
+_BEGIN_RETRY_ATTEMPTS = 5
+_MEMORY_TYPES = frozenset({
+    "fact",
+    "decision",
+    "preference",
+    "procedure",
+    "incident",
+    "failure",
+    "note",
+})
 _TOKEN_RE = re.compile(r"[^\W_]+(?:[_-][^\W_]+)*", re.UNICODE)
 _CONTEXT_FIELDS = ("workspace", "project", "repo", "branch")
-_MEMORY_COLUMNS = (
-    "id",
-    "title",
-    "content",
-    "memory_type",
-    *_CONTEXT_FIELDS,
-)
+_MEMORY_COLUMNS = ("id", "title", "content", "memory_type", *_CONTEXT_FIELDS)
 _MUTABLE_FIELDS = set(_MEMORY_COLUMNS) - {"id"}
 
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    memory_type TEXT NOT NULL,
+    workspace TEXT,
+    project TEXT,
+    repo TEXT,
+    branch TEXT
+);
 
-class MemoryType(StrEnum):
-    FACT = "fact"
-    DECISION = "decision"
-    PREFERENCE = "preference"
-    PROCEDURE = "procedure"
-    INCIDENT = "incident"
-    FAILURE = "failure"
-    NOTE = "note"
+CREATE TABLE IF NOT EXISTS aliases (
+    alias TEXT PRIMARY KEY,
+    canonical TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    memory_id UNINDEXED,
+    title,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_ai
+AFTER INSERT ON memories BEGIN
+    INSERT INTO memory_fts(memory_id, title, content)
+    VALUES (new.id, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_au
+AFTER UPDATE OF title, content ON memories BEGIN
+    DELETE FROM memory_fts WHERE memory_id = old.id;
+    INSERT INTO memory_fts(memory_id, title, content)
+    VALUES (new.id, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_ad
+AFTER DELETE ON memories BEGIN
+    DELETE FROM memory_fts WHERE memory_id = old.id;
+END;
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,23 +88,15 @@ class Memory:
 class MemBus:
     """User-owned SQLite memory store."""
 
-    def __init__(
-        self,
-        path: str | Path,
-        *,
-        busy_timeout_ms: int = 5_000,
-        begin_retry_attempts: int = 5,
-    ) -> None:
+    def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.busy_timeout_ms = busy_timeout_ms
-        self.begin_retry_attempts = begin_retry_attempts
         self._initialize()
 
     def put(
         self,
         *,
         content: str,
-        memory_type: MemoryType | str,
+        memory_type: str,
         title: str = "",
         workspace: str | None = None,
         project: str | None = None,
@@ -112,27 +141,26 @@ class MemBus:
         unknown = set(changes) - _MUTABLE_FIELDS
         if unknown:
             raise ValueError(f"Unsupported mutable fields: {sorted(unknown)}")
-        if not changes:
-            current = self.get(memory_id)
-            if current is None:
-                raise KeyError(memory_id)
-            return current
 
         current = self.get(memory_id)
         if current is None:
             raise KeyError(memory_id)
+        if not changes:
+            return current
 
         proposed = replace(current, **changes)
-        values = _normalize_memory_values(
-            title=proposed.title,
-            content=proposed.content,
-            memory_type=proposed.memory_type,
-            workspace=proposed.workspace,
-            project=proposed.project,
-            repo=proposed.repo,
-            branch=proposed.branch,
+        memory = Memory(
+            id=current.id,
+            **_normalize_memory_values(
+                title=proposed.title,
+                content=proposed.content,
+                memory_type=proposed.memory_type,
+                workspace=proposed.workspace,
+                project=proposed.project,
+                repo=proposed.repo,
+                branch=proposed.branch,
+            ),
         )
-        memory = Memory(id=current.id, **values)
 
         with self._transaction() as conn:
             conn.execute(
@@ -154,11 +182,10 @@ class MemBus:
 
     def delete(self, memory_id: str) -> bool:
         with self._transaction() as conn:
-            cursor = conn.execute(
+            return conn.execute(
                 "DELETE FROM memories WHERE id = ?",
                 (memory_id,),
-            )
-            return cursor.rowcount > 0
+            ).rowcount > 0
 
     def put_alias(self, alias: str, canonical: str) -> None:
         alias = _normalize_text(alias)
@@ -184,7 +211,7 @@ class MemBus:
         project: str | None = None,
         repo: str | None = None,
         branch: str | None = None,
-        types: Iterable[MemoryType | str] = (),
+        types: Iterable[str] = (),
         limit: int = 10,
     ) -> list[Memory]:
         query = _normalize_text(query)
@@ -200,10 +227,7 @@ class MemBus:
             "branch": _clean_optional(branch),
         }
         _validate_context(context)
-
-        normalized_types = tuple(
-            dict.fromkeys(str(MemoryType(str(value))) for value in types)
-        )
+        normalized_types = tuple(dict.fromkeys(_memory_type(value) for value in types))
 
         exact = self._exact_candidates(
             query,
@@ -213,8 +237,9 @@ class MemBus:
         )
 
         tokens = _extract_tokens(query)
-        aliases = self._alias_map(tokens)
-        fts_query = _build_fts_or_query(_expand_tokens(tokens, aliases))
+        fts_query = _build_fts_or_query(
+            _expand_tokens(tokens, self._alias_map(tokens))
+        )
         fts = (
             self._fts_candidates(
                 fts_query,
@@ -272,20 +297,19 @@ class MemBus:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             self.path,
-            timeout=self.busy_timeout_ms / 1000,
+            timeout=_BUSY_TIMEOUT_MS / 1000,
             isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
-        conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
+        conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def _initialize(self) -> None:
         with contextlib.closing(self._connect()) as conn:
             self._ensure_wal(conn)
-            schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
             try:
-                conn.executescript(schema)
+                conn.executescript(_SCHEMA)
             except sqlite3.OperationalError as exc:
                 if "fts5" in str(exc).lower():
                     raise RuntimeError(
@@ -380,9 +404,9 @@ class MemBus:
     def _begin_with_retry(self, conn: sqlite3.Connection) -> None:
         self._retry_sqlite(lambda: conn.execute("BEGIN IMMEDIATE"))
 
-    def _retry_sqlite(self, action: Any) -> None:
+    def _retry_sqlite(self, action: Callable[[], Any]) -> None:
         last_error: sqlite3.OperationalError | None = None
-        for attempt in range(self.begin_retry_attempts):
+        for attempt in range(_BEGIN_RETRY_ATTEMPTS):
             try:
                 action()
                 return
@@ -390,7 +414,7 @@ class MemBus:
                 if not _is_busy(exc):
                     raise
                 last_error = exc
-                if attempt + 1 >= self.begin_retry_attempts:
+                if attempt + 1 >= _BEGIN_RETRY_ATTEMPTS:
                     break
                 time.sleep(0.02 * (2**attempt))
 
@@ -402,7 +426,7 @@ def _normalize_memory_values(
     *,
     title: str,
     content: str,
-    memory_type: MemoryType | str,
+    memory_type: str,
     workspace: str | None,
     project: str | None,
     repo: str | None,
@@ -415,7 +439,7 @@ def _normalize_memory_values(
     values: dict[str, Any] = {
         "title": title.strip(),
         "content": content,
-        "memory_type": str(MemoryType(str(memory_type))),
+        "memory_type": _memory_type(memory_type),
         "workspace": _clean_optional(workspace),
         "project": _clean_optional(project),
         "repo": _clean_optional(repo),
@@ -423,6 +447,13 @@ def _normalize_memory_values(
     }
     _validate_context(values)
     return values
+
+
+def _memory_type(value: str) -> str:
+    value = str(value)
+    if value not in _MEMORY_TYPES:
+        raise ValueError(f"Unsupported memory type: {value!r}")
+    return value
 
 
 def _validate_context(values: dict[str, Any]) -> None:
