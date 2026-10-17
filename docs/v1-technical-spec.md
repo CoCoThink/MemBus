@@ -2,31 +2,22 @@
 
 Status: development baseline
 
-## 1. Technology
-
-- Python 3.11+
-- SQLite + FTS5
-- standard-library `sqlite3`
-- optional MCP dependency
-
-## 2. Package shape
+## Runtime package
 
 ```text
 src/membus/
-├── store.py
-├── models.py
-├── schema.sql
+├── core.py
+├── cli.py
 ├── doctor.py
-├── evaluation.py
-├── retrieval/
-│   └── lexical.py
-├── services/
-│   └── memory_service.py
 └── adapters/
     └── mcp_server.py
 ```
 
-## 3. Schema
+`tools/evaluate.py` is repository/CI tooling, not runtime API.
+
+## Canonical schema
+
+The schema is inlined in `core.py`.
 
 ```sql
 CREATE TABLE memories (
@@ -37,33 +28,22 @@ CREATE TABLE memories (
     workspace TEXT,
     project TEXT,
     repo TEXT,
-    branch TEXT,
-    source_type TEXT,
-    source_ref TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    branch TEXT
 );
 
 CREATE TABLE aliases (
     alias TEXT PRIMARY KEY,
     canonical TEXT NOT NULL
 );
-
-CREATE VIRTUAL TABLE memory_fts USING fts5(
-    memory_id UNINDEXED,
-    title,
-    content,
-    tokenize = 'unicode61 remove_diacritics 2'
-);
 ```
 
-FTS triggers synchronize insert, title/content update, and delete.
+FTS5 stores `memory_id/title/content`; triggers synchronize insert, title/content update, and delete.
 
-## 4. Context
+## Context
 
 There is no scope enum or column.
 
-Specificity is inferred from populated context:
+Stored/query context consists of:
 
 ```text
 workspace
@@ -72,28 +52,30 @@ repo
 branch
 ```
 
-Stored and query branch context requires repo context.
+Branch context requires repo context.
 
-Search excludes a row only when the row and query both supply the same dimension and values differ.
+A stored row is excluded when the query supplies the same dimension with a different value.
 
-## 5. Transactions
+## Transactions
 
-Connections use WAL, busy timeout, and `synchronous=NORMAL`.
+Runtime policy is intentionally fixed:
 
-Every application mutation uses:
-
-```sql
-BEGIN IMMEDIATE;
+```text
+WAL
+busy_timeout = 5000 ms
+synchronous = NORMAL
+BEGIN IMMEDIATE for writes
+5 bounded retry attempts
 ```
 
-with bounded retry for busy/locked errors.
+These settings are not public constructor configuration in V1.
 
-## 6. Retrieval
+## Retrieval
 
 ```text
 query
-  ├── exact substring
-  └── safe tokens -> aliases -> FTS5
+  ├─ exact substring
+  └─ tokens -> aliases -> FTS5
           │
           ▼
       SQL context filter
@@ -105,28 +87,25 @@ query
         Top-K
 ```
 
-Search returns:
+Search returns `list[Memory]`. No request/result wrapper, score, or explain mode exists.
 
-```json
-{
-  "memory": {"id": "mem_..."},
-  "match": "exact"
-}
+## Public Python API
+
+```python
+bus = MemBus(path)
+
+bus.put(...)
+bus.get(...)
+bus.update(...)
+bus.delete(...)
+bus.search(...)
+bus.put_alias(...)
+bus.backup(...)
 ```
 
-or `"match": "fts"`.
+`Memory` is the only record type exposed.
 
-No numeric relevance score or explain mode exists.
-
-## 7. Writes
-
-- `put` inserts a row
-- `get` fetches by ID
-- `update` validates and replaces mutable fields
-- `delete` physically deletes the row
-- FTS is updated by triggers
-
-## 8. MCP contract
+## MCP contract
 
 ```text
 memory_put
@@ -136,14 +115,12 @@ memory_delete
 memory_search
 ```
 
-## 9. Backup and doctor
+## Evaluation
 
-Backup uses `sqlite3.Connection.backup()`.
+Golden evaluation lives outside the runtime package:
 
-Doctor checks initialization, WAL, FTS5, integrity, FTS consistency, and write readiness.
+```bash
+python tools/evaluate.py evals/golden_v1.json
+```
 
-## 10. Evaluation
-
-Golden evaluation tracks Recall@5/10, MRR, zero-result rate, wrong-context rate, and P50/P95 latency.
-
-New retrieval machinery must demonstrate measurable benefit before being added.
+New retrieval machinery must demonstrate measurable benefit before entering the runtime.
