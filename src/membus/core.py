@@ -470,9 +470,10 @@ def _append_filters(
 ) -> None:
     for column in _CONTEXT_FIELDS:
         value = context[column]
-        if value is not None:
-            where.append(f"(m.{column} IS NULL OR m.{column} = ?)")
-            params.append(value)
+        where.append(
+            f"(m.{column} IS NULL OR (? IS NOT NULL AND m.{column} = ?))"
+        )
+        params.extend((value, value))
 
     if types:
         placeholders = ",".join("?" for _ in types)
