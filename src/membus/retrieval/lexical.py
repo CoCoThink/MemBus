@@ -14,54 +14,38 @@ def normalize_text(value: str) -> str:
 
 
 def extract_tokens(query: str) -> list[str]:
-    """Extract safe lexical terms without accepting raw FTS syntax."""
-
     seen: set[str] = set()
     tokens: list[str] = []
 
     for match in _TOKEN_RE.finditer(normalize_text(query)):
         token = match.group(0)
-        if not token or token in seen:
-            continue
-        seen.add(token)
-        tokens.append(token)
+        if token and token not in seen:
+            seen.add(token)
+            tokens.append(token)
 
     return tokens
 
 
-def expand_tokens(tokens: Iterable[str], aliases: dict[str, set[str]]) -> list[str]:
+def expand_tokens(tokens: Iterable[str], aliases: dict[str, str]) -> list[str]:
     seen: set[str] = set()
     expanded: list[str] = []
 
     for token in tokens:
-        for candidate in (token, *sorted(aliases.get(token, ()))):
-            normalized = normalize_text(candidate)
-            if not normalized or normalized in seen:
+        for candidate in (token, aliases.get(token)):
+            if candidate is None:
                 continue
-            seen.add(normalized)
-            expanded.append(normalized)
+            normalized = normalize_text(candidate)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                expanded.append(normalized)
 
     return expanded
 
 
 def build_fts_or_query(tokens: Iterable[str]) -> str | None:
-    """Build a safe FTS5 OR expression from already-tokenized terms."""
-
-    parts: list[str] = []
-    for token in tokens:
-        escaped = token.replace('"', '""')
-        if escaped:
-            parts.append(f'"{escaped}"')
-
-    if not parts:
-        return None
-
-    return " OR ".join(parts)
-
-
-def lexical_score_from_rank(rank: int) -> float:
-    """Convert FTS result position into a bounded relevance score."""
-
-    if rank < 0:
-        raise ValueError("rank must be non-negative")
-    return 1.0 / (1.0 + 0.15 * rank)
+    parts = [
+        f'"{token.replace(chr(34), chr(34) * 2)}"'
+        for token in tokens
+        if token
+    ]
+    return " OR ".join(parts) if parts else None
