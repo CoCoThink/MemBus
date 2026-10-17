@@ -1,4 +1,4 @@
-"""Scope validation and contextual affinity."""
+"""Scope validation and eligibility."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ class ScopeValidationError(ValueError):
 @dataclass(frozen=True, slots=True)
 class ScopeDecision:
     eligible: bool
-    score: float
     reason: str
 
 
@@ -36,29 +35,20 @@ def validate_scope(memory: MemoryCreate) -> Scope:
     return scope
 
 
-def scope_affinity(memory: Memory, context: SearchContext) -> ScopeDecision:
-    """Return eligibility plus a bounded scope-affinity score.
-
-    A known contextual mismatch excludes a scoped memory. If the caller did not
-    provide that context dimension, the memory remains searchable with a modest
-    score so explicit global searches can still find it.
-    """
+def scope_eligibility(memory: Memory, context: SearchContext) -> ScopeDecision:
+    """Exclude only known context mismatches; do not score scope."""
 
     try:
         scope = Scope(memory.scope)
     except ValueError:
-        return ScopeDecision(False, 0.0, "unknown memory scope")
+        return ScopeDecision(False, "unknown memory scope")
 
-    # Parent context is a correctness boundary. This prevents two projects with
-    # the same name in different workspaces (or two repos in different
-    # projects) from leaking into one another when both sides provide the
-    # disambiguating parent field.
     if (
         memory.workspace is not None
         and context.workspace is not None
         and memory.workspace != context.workspace
     ):
-        return ScopeDecision(False, 0.0, "workspace mismatch")
+        return ScopeDecision(False, "workspace mismatch")
 
     if (
         scope in {Scope.PROJECT, Scope.REPO, Scope.BRANCH}
@@ -66,7 +56,7 @@ def scope_affinity(memory: Memory, context: SearchContext) -> ScopeDecision:
         and context.project is not None
         and memory.project != context.project
     ):
-        return ScopeDecision(False, 0.0, "project mismatch")
+        return ScopeDecision(False, "project mismatch")
 
     if (
         scope in {Scope.REPO, Scope.BRANCH}
@@ -74,54 +64,13 @@ def scope_affinity(memory: Memory, context: SearchContext) -> ScopeDecision:
         and context.repo is not None
         and memory.repo != context.repo
     ):
-        return ScopeDecision(False, 0.0, "repo mismatch")
+        return ScopeDecision(False, "repo mismatch")
 
-    if scope is Scope.GLOBAL:
-        return ScopeDecision(True, 0.40, "global memory")
+    if (
+        scope is Scope.BRANCH
+        and context.branch is not None
+        and memory.branch != context.branch
+    ):
+        return ScopeDecision(False, "branch mismatch")
 
-    if scope is Scope.WORKSPACE:
-        return _match_one(
-            expected=memory.workspace,
-            actual=context.workspace,
-            matched=0.60,
-            label="workspace",
-        )
-
-    if scope is Scope.PROJECT:
-        return _match_one(
-            expected=memory.project,
-            actual=context.project,
-            matched=0.75,
-            label="project",
-        )
-
-    if scope is Scope.REPO:
-        return _match_one(
-            expected=memory.repo,
-            actual=context.repo,
-            matched=0.90,
-            label="repo",
-        )
-
-    # branch scope requires both repo and branch.
-    if context.repo is not None and context.repo != memory.repo:
-        return ScopeDecision(False, 0.0, "repo mismatch")
-    if context.branch is not None and context.branch != memory.branch:
-        return ScopeDecision(False, 0.0, "branch mismatch")
-    if context.repo == memory.repo and context.branch == memory.branch:
-        return ScopeDecision(True, 1.00, "repo and branch match")
-    return ScopeDecision(True, 0.45, "branch context not fully specified")
-
-
-def _match_one(
-    *,
-    expected: str | None,
-    actual: str | None,
-    matched: float,
-    label: str,
-) -> ScopeDecision:
-    if actual is None:
-        return ScopeDecision(True, 0.45, f"{label} context not specified")
-    if expected == actual:
-        return ScopeDecision(True, matched, f"{label} match")
-    return ScopeDecision(False, 0.0, f"{label} mismatch")
+    return ScopeDecision(True, f"{scope.value} applicable")
