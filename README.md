@@ -51,7 +51,7 @@ query
         Top-K
 ```
 
-Workspace/project/repo/branch mismatches are excluded when both the stored memory and query provide that context dimension.
+Every non-empty context value stored on a memory must also be present and equal in the query context. In other words, `memory_context ⊆ query_context`.
 
 ## MCP tools
 
