@@ -120,8 +120,6 @@ class MemoryService:
             source_ref=_clean_optional(normalized.source_ref),
         )
 
-        if final_memory == current:
-            return current
         return self.repository.update(final_memory)
 
     def delete(self, memory_id: str) -> bool:
