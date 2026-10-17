@@ -4,25 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .store import SQLiteStore
+from .core import MemBus
 
 
-def run_doctor(store: SQLiteStore) -> dict[str, Any]:
-    try:
-        store.initialize()
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "database": str(store.path),
-            "ok": False,
-            "checks": [
-                {
-                    "name": "initialize",
-                    "ok": False,
-                    "detail": f"{type(exc).__name__}: {exc}",
-                }
-            ],
-        }
-
+def run_doctor(bus: MemBus) -> dict[str, Any]:
     checks: list[dict[str, Any]] = [
         {
             "name": "initialize",
@@ -32,11 +17,11 @@ def run_doctor(store: SQLiteStore) -> dict[str, Any]:
     ]
 
     probes: tuple[tuple[str, Callable[[], dict[str, Any]]], ...] = (
-        ("journal_mode", lambda: _check_wal(store)),
-        ("fts5", lambda: _check_fts5(store)),
-        ("integrity", lambda: _check_integrity(store)),
-        ("fts_consistency", lambda: _check_fts_consistency(store)),
-        ("write_transaction", lambda: _check_write_transaction(store)),
+        ("journal_mode", lambda: _check_wal(bus)),
+        ("fts5", lambda: _check_fts5(bus)),
+        ("integrity", lambda: _check_integrity(bus)),
+        ("fts_consistency", lambda: _check_fts_consistency(bus)),
+        ("write_transaction", lambda: _check_write_transaction(bus)),
     )
 
     for name, probe in probes:
@@ -52,16 +37,15 @@ def run_doctor(store: SQLiteStore) -> dict[str, Any]:
             )
 
     return {
-        "database": str(store.path),
+        "database": str(bus.path),
         "ok": all(check["ok"] for check in checks),
         "checks": checks,
     }
 
 
-def _check_wal(store: SQLiteStore) -> dict[str, Any]:
-    with store.connection() as conn:
-        row = conn.execute("PRAGMA journal_mode").fetchone()
-    mode = str(row[0]).casefold() if row is not None else "unknown"
+def _check_wal(bus: MemBus) -> dict[str, Any]:
+    with bus._connection() as conn:
+        mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).casefold()
     return {
         "name": "journal_mode",
         "ok": mode == "wal",
@@ -69,8 +53,8 @@ def _check_wal(store: SQLiteStore) -> dict[str, Any]:
     }
 
 
-def _check_fts5(store: SQLiteStore) -> dict[str, Any]:
-    with store.connection() as conn:
+def _check_fts5(bus: MemBus) -> dict[str, Any]:
+    with bus._connection() as conn:
         conn.execute(
             "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH ?",
             ('"membus-doctor-token"',),
@@ -82,8 +66,8 @@ def _check_fts5(store: SQLiteStore) -> dict[str, Any]:
     }
 
 
-def _check_integrity(store: SQLiteStore) -> dict[str, Any]:
-    with store.connection() as conn:
+def _check_integrity(bus: MemBus) -> dict[str, Any]:
+    with bus._connection() as conn:
         messages = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
     ok = messages == ["ok"]
     return {
@@ -93,8 +77,8 @@ def _check_integrity(store: SQLiteStore) -> dict[str, Any]:
     }
 
 
-def _check_fts_consistency(store: SQLiteStore) -> dict[str, Any]:
-    with store.connection() as conn:
+def _check_fts_consistency(bus: MemBus) -> dict[str, Any]:
+    with bus._connection() as conn:
         memory_count = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
         fts_count = int(conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0])
         missing = int(
@@ -139,8 +123,8 @@ def _check_fts_consistency(store: SQLiteStore) -> dict[str, Any]:
     }
 
 
-def _check_write_transaction(store: SQLiteStore) -> dict[str, Any]:
-    with store.transaction() as conn:
+def _check_write_transaction(bus: MemBus) -> dict[str, Any]:
+    with bus._transaction() as conn:
         conn.execute("UPDATE aliases SET canonical = canonical WHERE 0")
     return {
         "name": "write_transaction",
