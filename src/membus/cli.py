@@ -30,15 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         help="SQLite canonical database path.",
     )
-    parser.add_argument(
-        "--compact",
-        action="store_true",
-        help="Emit compact JSON instead of pretty JSON.",
-    )
-
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="Initialize or verify the database.")
     sub.add_parser("doctor", help="Check MemBus application and data health.")
 
     put = sub.add_parser("put", help="Store an explicit durable memory.")
@@ -93,7 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "eval":
         report = evaluate_dataset(args.dataset)
-        _print_json(report.as_dict(), compact=args.compact)
+        _print_json(report.as_dict())
         failures: list[str] = []
         if args.min_recall_5 is not None and report.recall_at_5 < args.min_recall_5:
             failures.append(
@@ -122,7 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "doctor":
         report = run_doctor(db)
-        _print_json(report.as_dict(), compact=args.compact)
+        _print_json(report.as_dict())
         return 0 if report.ok else 1
 
     service = MemoryService(db)
@@ -130,13 +123,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "init":
         _print_json(
             {"database": str(db.path), "status": "ready"},
-            compact=args.compact,
-        )
+                    )
         return 0
 
     if args.command == "put":
         memory = service.put(MemoryCreate(**_memory_create_kwargs(args)))
-        _print_json(asdict(memory), compact=args.compact)
+        _print_json(asdict(memory))
         return 0
 
     if args.command == "get":
@@ -145,31 +137,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             include_deleted=args.include_deleted,
         )
         if memory is None:
-            _print_json({"error": "not_found", "id": args.memory_id}, compact=args.compact)
+            _print_json({"error": "not_found", "id": args.memory_id})
             return 1
-        _print_json(asdict(memory), compact=args.compact)
+        _print_json(asdict(memory))
         return 0
 
     if args.command == "update":
         changes = _memory_update_kwargs(args)
         memory = service.update(args.memory_id, **changes)
-        _print_json(asdict(memory), compact=args.compact)
+        _print_json(asdict(memory))
         return 0
 
     if args.command == "delete":
         deleted = service.delete(args.memory_id)
         _print_json(
             {"id": args.memory_id, "deleted": deleted},
-            compact=args.compact,
-        )
+                    )
         return 0 if deleted else 1
 
     if args.command == "alias":
         service.put_alias(args.alias, args.canonical)
         _print_json(
             {"alias": args.alias, "canonical": args.canonical},
-            compact=args.compact,
-        )
+                    )
         return 0
 
     if args.command == "search":
@@ -187,8 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "query": args.query,
                 "results": [_search_result_payload(result) for result in results],
             },
-            compact=args.compact,
-        )
+                    )
         return 0
 
     if args.command == "search-many":
@@ -207,16 +196,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "queries": args.queries,
                 "results": [_search_result_payload(result) for result in results],
             },
-            compact=args.compact,
-        )
+                    )
         return 0
 
     if args.command == "backup":
         destination = db.backup(args.destination)
         _print_json(
             {"source": str(db.path), "backup": str(destination)},
-            compact=args.compact,
-        )
+                    )
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")
@@ -302,11 +289,8 @@ def _search_result_payload(result: Any) -> dict[str, Any]:
     }
 
 
-def _print_json(payload: Any, *, compact: bool) -> None:
-    if compact:
-        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-    else:
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+def _print_json(payload: Any) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
