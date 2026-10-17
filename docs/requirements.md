@@ -1,87 +1,24 @@
 # MemBus Requirements
 
-Status: V1 implementation baseline  
-Scope: user-owned long-term memory infrastructure for AI agents
+Status: V1 development baseline
 
-## 1. Problem
+## 1. Goal
 
-Agent products increasingly keep memory inside their own product boundary. That fragments long-term state and creates vendor lock-in.
+MemBus keeps long-term agent memory in a user-owned local store so Claude Code, Codex, Cursor, ChatGPT, and future clients can share it without making any agent vendor the system of record.
 
-MemBus treats agents as replaceable clients:
+## 2. Required principles
 
-```text
-Claude Code / Codex / Cursor / ChatGPT / future agents
-                         │
-                    MCP / CLI
-                         ▼
-                       MemBus
-                         ▼
-               user-owned SQLite store
-```
+- local-first SQLite
+- exact/lexical retrieval works without embeddings
+- FTS is derived from canonical memory
+- scope prevents cross-project leakage
+- adapters call a shared service layer
+- the core requires no LLM or hosted service
+- complexity is added only after measured failure
 
-The V1 goal is a small, reliable, inspectable memory core. It is not an autonomous cognitive architecture.
+## 3. Canonical memory
 
-## 2. Principles
-
-### P1. User sovereignty
-
-Canonical memory remains usable if any agent vendor, account, protocol, or retrieval subsystem disappears.
-
-### P2. Local first
-
-V1 works with local SQLite and requires no hosted service.
-
-### P3. Lexical first
-
-Exact matching and SQLite FTS5/BM25 are sufficient for baseline correctness. Embeddings are optional future indexes.
-
-### P4. Derived indexes are disposable
-
-FTS, vector indexes, graph projections, and caches must be rebuildable from canonical records.
-
-### P5. Scope is a correctness boundary
-
-Workspace/project/repo/branch mismatches must not leak unrelated memory into the result set.
-
-### P6. Read/write separation
-
-Retrieval and future automatic memory formation are separate pipelines.
-
-### P7. Explainability
-
-The caller can inspect the lexical and scope signals that produced a result.
-
-### P8. Progressive complexity
-
-A feature is added only when a measured failure justifies it.
-
-## 3. Users and non-goals
-
-Primary target:
-
-- one technical user
-- several agent clients owned by that user
-- one canonical memory store
-
-V1 does not target multi-user SaaS.
-
-V1 does not require:
-
-- embeddings
-- vector DB
-- graph DB
-- LLM query rewriting
-- LLM reranking
-- automatic conversation ingestion
-- automatic memory extraction
-- autonomous consolidation
-- multi-user ACL
-- distributed storage
-- hosted control plane
-
-## 4. Canonical memory
-
-A V1 memory contains:
+A memory contains:
 
 - stable ID
 - title
@@ -93,24 +30,9 @@ A V1 memory contains:
 - created/updated timestamps
 - optional deleted timestamp
 
-Fields without current runtime semantics do not belong in the canonical row.
+No generic importance, confidence, trust, temporal validity, or supersession fields exist in V1.
 
-In particular, V1 does not carry generic:
-
-```text
-importance
-confidence
-trust
-valid_from
-valid_until
-supersedes_id
-```
-
-Those concepts may return later with explicit semantics and evaluation evidence.
-
-## 5. Memory types
-
-V1 supports:
+## 4. Memory types
 
 ```text
 fact
@@ -122,9 +44,7 @@ failure
 note
 ```
 
-## 6. Scope
-
-V1 supports:
+## 5. Scope
 
 ```text
 global
@@ -144,11 +64,9 @@ Required fields:
 | repo | repo |
 | branch | repo + branch |
 
-Known parent mismatches are ineligible, not merely lower ranked.
+Known parent mismatches are excluded.
 
-## 7. Core operations
-
-The service provides:
+## 6. Core operations
 
 ```text
 put
@@ -159,22 +77,16 @@ search
 search_many
 ```
 
-Delete is logical: `deleted_at` is set and the canonical row remains auditable.
+Delete is logical through `deleted_at`.
 
-The MCP adapter exposes the same six operations and does not own storage semantics.
-
-## 8. Retrieval
-
-Search must work with SQLite + FTS5 only.
+## 7. Retrieval
 
 Candidate sources:
 
 1. exact/full-query substring matching
-2. FTS5 lexical matching with deterministic alias expansion
+2. FTS5/BM25 with deterministic aliases
 
-Exact identifiers such as issue IDs, paths, symbols, and config keys must be able to enter the candidate set independently.
-
-V1 ranking is intentionally small:
+Ranking:
 
 ```text
 score =
@@ -182,109 +94,33 @@ score =
   + 0.20 * scope
 ```
 
-No recency, importance, confidence, or trust signal is used by default.
+`search_many` unions candidates and keeps the best score per memory.
 
-`search_many` unions results from several lexical formulations and keeps the best score per memory. It does not add an arbitrary multi-query bonus.
-
-## 9. Provenance and audit
-
-A memory may retain:
-
-```text
-source_type
-source_ref
-```
-
-Mutations append an event in the same transaction.
-
-Normal events:
-
-```text
-created
-updated
-deleted
-```
-
-Events should not duplicate full memory content when a compact changed-field payload is enough.
-
-External content is not automatically durable memory. Any future automatic extraction layer must call the same validated service contract.
-
-## 10. Retrieval logging
-
-Retrieval logging is optional.
-
-Modes:
-
-```text
-off
-metadata-only
-full
-```
-
-A log records only:
-
-- optional query text
-- scope context
-- candidate count
-- returned IDs
-- latency
-- timestamp
-
-There is no generic debug blob in the canonical schema.
-
-## 11. Persistence and concurrency
-
-V1 uses SQLite WAL.
+## 8. Persistence
 
 Requirements:
 
-- foreign keys enabled
+- SQLite WAL
 - busy timeout
-- bounded retry for transient lock contention
-- all application writes use `BEGIN IMMEDIATE`
-- read-only operations do not open write transactions
+- bounded retry for lock contention
+- `BEGIN IMMEDIATE` for all application writes
+- SQLite backup API
+- FTS synchronization through triggers
 
-The `BEGIN IMMEDIATE` rule is based on a reproduced multi-process lock-upgrade failure, not only on theory.
+No schema migration compatibility is required before the first deployment.
 
-## 12. FTS consistency
-
-Canonical title/content writes must synchronize FTS transactionally through SQLite triggers.
-
-FTS is derived state and may be rebuilt from `memories`.
-
-## 13. Backup and health
-
-Backups use SQLite's backup API, not raw copying of only the WAL main file.
+## 9. Health and evaluation
 
 `membus doctor` verifies:
 
-- schema compatibility
+- initialization
 - WAL
-- foreign keys
 - FTS5
 - SQLite integrity
 - FTS/canonical consistency
 - write readiness
 
-## 14. Schema evolution
-
-Schema changes are versioned.
-
-Startup must:
-
-1. create a fresh DB directly at the current schema
-2. migrate older supported schemas
-3. reject a DB newer than the running binary understands
-
-Current schema version is 2.
-
-The v1 -> v2 migration intentionally removed unused scoring/lifecycle fields and the redundant `status` column. Non-default removed v1 metadata is retained once in the event ledger for auditability.
-
-## 15. Evaluation
-
-The repository maintains an isolated Golden Retrieval Evaluation.
-
-Required metrics:
+Golden evaluation tracks:
 
 - Recall@5
 - Recall@10
@@ -294,37 +130,32 @@ Required metrics:
 - wrong-scope hit rate
 - P50/P95 latency
 
-The golden set is a regression baseline and should become harder as real misses are observed.
+## 10. Explicit non-goals
 
-## 16. Evolution gates
+Not required now:
 
-Add query rewrite when lexical misses are regularly recovered by reformulation.
+- migration/version compatibility
+- event history
+- runtime retrieval logging
+- embeddings/vector DB
+- graph DB
+- LLM query rewrite/rerank
+- automatic ingestion/extraction/consolidation
+- temporal lifecycle
+- ACL/multi-user tenancy
+- distributed storage
 
-Add a reranker when relevant memories are usually in the candidate set but rank too low.
+## 11. Acceptance criteria
 
-Add embeddings only when lexical + alias + query reformulation still misses materially relevant memories.
+V1 development baseline is healthy when:
 
-Add temporal validity/supersession only when stale/conflicting facts become a measured problem.
-
-Add graph traversal only when multi-hop relationship questions recur.
-
-Add ACL/identity only when different human users or clients need different access.
-
-Add automatic extraction only when explicit durable writes become a measured maintenance bottleneck.
-
-Add distributed/vector-database infrastructure only when SQLite + derived side indexes hit a demonstrated capacity or availability limit.
-
-## 17. V1 acceptance criteria
-
-V1 is acceptable when:
-
-1. fresh and legacy databases initialize/migrate safely
-2. CRUD + logical delete + event audit work
+1. a fresh DB initializes idempotently
+2. CRUD and logical delete work
 3. exact identifiers and technical terms retrieve reliably
 4. wrong project/repo memories are excluded
-5. score explanations are reproducible
-6. multi-query retrieval works without model calls
-7. concurrent readers and multi-process writers work without corruption
-8. backup/restore works under WAL
-9. core tests run without network/model credentials
-10. MCP remains an adapter over the same core used by CLI and future transports
+5. aliases and multi-query retrieval work
+6. concurrent readers and multi-process writers do not corrupt the DB
+7. backup/restore works in WAL mode
+8. core tests require no network/model credentials
+9. MCP and CLI use the same service semantics
+10. Golden retrieval gates pass
