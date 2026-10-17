@@ -324,11 +324,10 @@ memory
 ├── type
 ├── scope
 ├── provenance
-├── lifecycle
-└── related entities
+└── timestamps / logical deletion
 ```
 
-rather than requiring all memory to be expressed first as graph observations.
+rather than requiring all memory to be expressed first as graph observations. Temporal lifecycle and entity relationships stay out of the canonical V1 row until measured failures justify them.
 
 ### 8.2 Lexical retrieval can independently generate candidates
 
