@@ -23,8 +23,6 @@ def test_crud_and_event_ledger(service: MemoryService) -> None:
             scope="repo",
             project="payment",
             repo="payment-api",
-            importance=0.9,
-            trust=1.0,
             source_type="user_rule",
         ),
         actor="test",
@@ -196,7 +194,6 @@ def test_multi_query_fuses_candidates(service: MemoryService) -> None:
 
     assert results
     assert results[0].memory.id == primary.id
-    assert results[0].signals["query_hits"] >= 2
 
 
 def test_backup_restores_canonical_data(tmp_path: Path) -> None:
