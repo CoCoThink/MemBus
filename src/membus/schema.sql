@@ -1,0 +1,1 @@
+-- Schema is inlined in core.py; this file is not packaged or used at runtime.
