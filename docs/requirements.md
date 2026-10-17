@@ -86,13 +86,7 @@ Candidate sources:
 1. exact/full-query substring matching
 2. FTS5/BM25 with deterministic aliases
 
-Ranking:
-
-```text
-score =
-    0.80 * lexical
-  + 0.20 * scope
-```
+Ranking uses lexical relevance only after scope eligibility filtering.
 
 `search_many` unions candidates and keeps the best score per memory.
 
@@ -125,7 +119,6 @@ Golden evaluation tracks:
 - Recall@5
 - Recall@10
 - MRR
-- Precision@5
 - zero-result rate
 - wrong-scope hit rate
 - P50/P95 latency
