@@ -20,7 +20,6 @@ python -m pip install -e '.[mcp]'
 Initialize and verify the intended canonical store:
 
 ```bash
-membus --db "$HOME/.membus/memory.db" init
 membus --db "$HOME/.membus/memory.db" doctor
 ```
 
