@@ -57,3 +57,11 @@ def build_fts_or_query(tokens: Iterable[str]) -> str | None:
         return None
 
     return " OR ".join(parts)
+
+
+def lexical_score_from_rank(rank: int) -> float:
+    """Convert FTS result position into a bounded relevance score."""
+
+    if rank < 0:
+        raise ValueError("rank must be non-negative")
+    return 1.0 / (1.0 + 0.15 * rank)
