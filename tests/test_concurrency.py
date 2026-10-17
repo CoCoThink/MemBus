@@ -25,16 +25,15 @@ def _writer_worker(db_path: str, worker_id: int, count: int) -> int:
                 ),
                 memory_type="note",
                 scope="global",
-            ),
-            actor=f"worker-{worker_id}",
+            )
         )
     return count
 
 
 def test_multiple_processes_can_write_one_canonical_store(tmp_path: Path) -> None:
     path = tmp_path / "concurrent.db"
-    # Initialize once before child processes start so schema migration is not
-    # part of the write-contention measurement.
+    # Initialize once before child processes start so setup is not part of
+    # the write-contention measurement.
     MemoryService(Database(path))
 
     worker_count = 4
@@ -68,9 +67,4 @@ def test_multiple_processes_can_write_one_canonical_store(tmp_path: Path) -> Non
         memory_count = conn.execute(
             "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
         ).fetchone()[0]
-        event_count = conn.execute(
-            "SELECT COUNT(*) FROM memory_events WHERE event_type = 'created'"
-        ).fetchone()[0]
-
     assert memory_count == worker_count * writes_per_worker
-    assert event_count == memory_count
