@@ -261,14 +261,8 @@ def _add_memory_fields(
     parser.add_argument("--memory-type", required=require_core)
     parser.add_argument("--scope", required=require_core)
     _add_context_fields(parser)
-    parser.add_argument("--importance", type=float)
-    parser.add_argument("--confidence", type=float)
-    parser.add_argument("--trust", type=float)
     parser.add_argument("--source-type")
     parser.add_argument("--source-ref")
-    parser.add_argument("--valid-from")
-    parser.add_argument("--valid-until")
-    parser.add_argument("--supersedes-id")
 
 
 def _memory_create_kwargs(args: argparse.Namespace) -> dict[str, Any]:
@@ -281,14 +275,8 @@ def _memory_create_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "project": args.project,
         "repo": args.repo,
         "branch": args.branch,
-        "importance": 0.5 if args.importance is None else args.importance,
-        "confidence": 1.0 if args.confidence is None else args.confidence,
-        "trust": 0.5 if args.trust is None else args.trust,
         "source_type": args.source_type,
         "source_ref": args.source_ref,
-        "valid_from": args.valid_from,
-        "valid_until": args.valid_until,
-        "supersedes_id": args.supersedes_id,
     }
 
 
@@ -302,14 +290,8 @@ def _memory_update_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "project": "project",
         "repo": "repo",
         "branch": "branch",
-        "importance": "importance",
-        "confidence": "confidence",
-        "trust": "trust",
         "source_type": "source_type",
         "source_ref": "source_ref",
-        "valid_from": "valid_from",
-        "valid_until": "valid_until",
-        "supersedes_id": "supersedes_id",
     }
     changes = {
         target: getattr(args, source)
