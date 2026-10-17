@@ -27,7 +27,6 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
             "memory_update",
             "memory_delete",
             "memory_search",
-            "memory_search_many",
         }
 
         created = await client.call_tool(
@@ -36,7 +35,6 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
                 "title": "Generated client",
                 "content": "generated/client.ts comes from OpenAPI.",
                 "memory_type": "procedure",
-                "scope": "repo",
                 "project": "payment",
                 "repo": "payment-api",
             },
@@ -51,10 +49,9 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
                 "query": "generated/client.ts",
                 "project": "payment",
                 "repo": "payment-api",
-                "explain": True,
             },
         )
         payload = searched.structured_content
         assert payload is not None
         assert payload["results"][0]["memory"]["id"] == memory_id
-        assert payload["results"][0]["signals"]["exact_match"] is True
+        assert payload["results"][0]["match"] == "exact"
