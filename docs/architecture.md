@@ -63,6 +63,20 @@ The core accepts validated memory operations. Future extraction/reflection modul
 
 A ranking change must be debuggable from logged signals and a reproducible evaluation set.
 
+## 2.1 Transport neutrality
+
+Local coding agents and remotely connected clients use the same MemBus semantics.
+
+```text
+local client ── stdio ──────────────┐
+                                    ├──> membus-mcp -> MemoryService
+ChatGPT Web ─ Secure MCP Tunnel ────┘
+```
+
+ChatGPT Web is treated as another MCP client. Transport must not create a separate memory model, tool surface, ranking policy, or canonical store.
+
+More complex identity, ACL, visibility, or policy layers are deferred until a real multi-user or differentiated-access requirement appears.
+
 ## 3. Component boundaries
 
 ### 3.1 Canonical store
