@@ -2,21 +2,22 @@
 
 Status: V1 development baseline
 
-## 1. Goal
+## Goal
 
-MemBus keeps long-term agent memory in a user-owned local store so Claude Code, Codex, Cursor, ChatGPT, and future clients can share it without making any agent vendor the system of record.
+MemBus provides one user-owned local memory store shared by multiple AI clients.
 
-## 2. Required principles
+## Required behavior
 
-- local-first SQLite
-- exact/lexical retrieval works without embeddings
-- FTS is derived from canonical memory
-- scope prevents cross-project leakage
-- adapters call a shared service layer
-- the core requires no LLM or hosted service
-- complexity is added only after measured failure
+- SQLite is canonical.
+- MCP and CLI use the same service semantics.
+- Exact identifiers can be retrieved without embeddings.
+- FTS5/BM25 provides lexical retrieval.
+- Aliases provide deterministic query expansion.
+- Workspace/project/repo/branch context prevents known cross-context leakage.
+- The core requires no LLM, hosted service, or embedding model.
+- Writes are safe under the tested multi-process SQLite workload.
 
-## 3. Canonical memory
+## Canonical memory
 
 A memory contains:
 
@@ -24,49 +25,15 @@ A memory contains:
 - title
 - content
 - memory type
-- scope
 - optional workspace/project/repo/branch
 - optional source type/reference
 - created/updated timestamps
-- optional deleted timestamp
 
-No generic importance, confidence, trust, temporal validity, or supersession fields exist in V1.
+No explicit scope field exists. Context specificity is inferred from populated context fields.
 
-## 4. Memory types
+A branch requires a repo.
 
-```text
-fact
-decision
-preference
-procedure
-incident
-failure
-note
-```
-
-## 5. Scope
-
-```text
-global
-workspace
-project
-repo
-branch
-```
-
-Required fields:
-
-| scope | required |
-|---|---|
-| global | none |
-| workspace | workspace |
-| project | project |
-| repo | repo |
-| branch | repo + branch |
-
-Known parent mismatches are excluded.
-
-## 6. Core operations
+## Operations
 
 ```text
 put
@@ -74,44 +41,51 @@ get
 update
 delete
 search
-search_many
 ```
 
-Delete is logical through `deleted_at`.
+Delete is physical.
 
-## 7. Retrieval
+## Retrieval
 
 Candidate sources:
 
-1. exact/full-query substring matching
-2. FTS5/BM25 with deterministic aliases
+1. exact full-query substring matching
+2. FTS5/BM25 after deterministic alias expansion
 
-Ranking uses lexical relevance only after scope eligibility filtering.
+Context rules are applied in SQL:
 
-`search_many` unions candidates and keeps the best score per memory.
+- if a memory has a context value and the request supplies a different value, exclude it
+- a memory with no value for that dimension remains applicable
 
-## 8. Persistence
+Ordering:
 
-Requirements:
+1. exact matches
+2. remaining FTS results in BM25 order
 
-- SQLite WAL
+No synthetic numeric score is exposed.
+
+## Persistence
+
+Required:
+
+- WAL
 - busy timeout
-- bounded retry for lock contention
-- `BEGIN IMMEDIATE` for all application writes
+- bounded busy retry
+- `BEGIN IMMEDIATE` for writes
 - SQLite backup API
-- FTS synchronization through triggers
+- FTS triggers
 
-No schema migration compatibility is required before the first deployment.
+No compatibility migrations are required before first deployment.
 
-## 9. Health and evaluation
+## Health and evaluation
 
-`membus doctor` verifies:
+`membus doctor` checks:
 
 - initialization
 - WAL
 - FTS5
 - SQLite integrity
-- FTS/canonical consistency
+- canonical/FTS consistency
 - write readiness
 
 Golden evaluation tracks:
@@ -120,35 +94,21 @@ Golden evaluation tracks:
 - Recall@10
 - MRR
 - zero-result rate
-- wrong-scope hit rate
+- wrong-context hit rate
 - P50/P95 latency
 
-## 10. Explicit non-goals
+## Non-goals
 
 Not required now:
 
-- migration/version compatibility
+- soft delete or restore
 - event history
 - runtime retrieval logging
+- search-many/batch retrieval
+- relevance-score calibration
 - embeddings/vector DB
 - graph DB
 - LLM query rewrite/rerank
 - automatic ingestion/extraction/consolidation
-- temporal lifecycle
 - ACL/multi-user tenancy
 - distributed storage
-
-## 11. Acceptance criteria
-
-V1 development baseline is healthy when:
-
-1. a fresh DB initializes idempotently
-2. CRUD and logical delete work
-3. exact identifiers and technical terms retrieve reliably
-4. wrong project/repo memories are excluded
-5. aliases and multi-query retrieval work
-6. concurrent readers and multi-process writers do not corrupt the DB
-7. backup/restore works in WAL mode
-8. core tests require no network/model credentials
-9. MCP and CLI use the same service semantics
-10. Golden retrieval gates pass
