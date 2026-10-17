@@ -33,9 +33,6 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["membus", "membus.adapters"]
 
-[tool.setuptools.package-data]
-membus = ["schema.sql"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
