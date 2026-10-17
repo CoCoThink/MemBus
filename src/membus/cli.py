@@ -17,6 +17,20 @@ from .models import MemoryCreate, SearchContext, SearchManyRequest, SearchReques
 from .services.memory_service import MemoryService
 
 
+_MEMORY_FIELDS = (
+    "title",
+    "content",
+    "memory_type",
+    "scope",
+    "workspace",
+    "project",
+    "repo",
+    "branch",
+    "source_type",
+    "source_ref",
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="membus",
@@ -30,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         help="SQLite canonical database path.",
     )
+
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="Check MemBus application and data health.")
@@ -52,27 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
     alias.add_argument("alias")
     alias.add_argument("canonical")
 
-    search = sub.add_parser("search", help="Search the canonical memory store.")
+    search = sub.add_parser("search", help="Search the memory store.")
     search.add_argument("query")
-    _add_context_fields(search)
-    search.add_argument("--type", dest="types", action="append", default=[])
-    search.add_argument("--limit", type=int, default=10)
-    search.add_argument("--explain", action="store_true")
+    _add_search_fields(search)
 
     many = sub.add_parser("search-many", help="Search several query formulations.")
     many.add_argument("queries", nargs="+")
-    _add_context_fields(many)
-    many.add_argument("--type", dest="types", action="append", default=[])
-    many.add_argument("--limit", type=int, default=10)
-    many.add_argument("--explain", action="store_true")
+    _add_search_fields(many)
 
     backup = sub.add_parser("backup", help="Create a consistent SQLite backup.")
     backup.add_argument("destination")
 
-    evaluate = sub.add_parser(
-        "eval",
-        help="Run a golden retrieval dataset in an isolated temporary database.",
-    )
+    evaluate = sub.add_parser("eval", help="Run the isolated golden evaluation.")
     evaluate.add_argument("dataset")
     evaluate.add_argument("--min-recall-5", type=float)
     evaluate.add_argument("--min-recall-10", type=float)
@@ -87,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "eval":
         report = evaluate_dataset(args.dataset)
         _print_json(report.as_dict())
+
         failures: list[str] = []
         if args.min_recall_5 is not None and report.recall_at_5 < args.min_recall_5:
             failures.append(
@@ -105,11 +112,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{report.wrong_scope_hit_rate:.4f} > "
                 f"{args.max_wrong_scope_rate:.4f}"
             )
-        if failures:
-            for failure in failures:
-                print(f"evaluation gate failed: {failure}", file=sys.stderr)
-            return 2
-        return 0
+
+        for failure in failures:
+            print(f"evaluation gate failed: {failure}", file=sys.stderr)
+        return 2 if failures else 0
 
     db = Database(args.db)
 
@@ -120,22 +126,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     service = MemoryService(db)
 
-    if args.command == "init":
-        _print_json(
-            {"database": str(db.path), "status": "ready"},
-                    )
-        return 0
-
     if args.command == "put":
-        memory = service.put(MemoryCreate(**_memory_create_kwargs(args)))
-        _print_json(asdict(memory))
+        _print_json(asdict(service.put(MemoryCreate(**_memory_create_kwargs(args)))))
         return 0
 
     if args.command == "get":
-        memory = service.get(
-            args.memory_id,
-            include_deleted=args.include_deleted,
-        )
+        memory = service.get(args.memory_id, include_deleted=args.include_deleted)
         if memory is None:
             _print_json({"error": "not_found", "id": args.memory_id})
             return 1
@@ -143,41 +139,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "update":
-        changes = _memory_update_kwargs(args)
-        memory = service.update(args.memory_id, **changes)
+        memory = service.update(args.memory_id, **_memory_update_kwargs(args))
         _print_json(asdict(memory))
         return 0
 
     if args.command == "delete":
         deleted = service.delete(args.memory_id)
-        _print_json(
-            {"id": args.memory_id, "deleted": deleted},
-                    )
+        _print_json({"id": args.memory_id, "deleted": deleted})
         return 0 if deleted else 1
 
     if args.command == "alias":
         service.put_alias(args.alias, args.canonical)
-        _print_json(
-            {"alias": args.alias, "canonical": args.canonical},
-                    )
+        _print_json({"alias": args.alias, "canonical": args.canonical})
         return 0
 
     if args.command == "search":
-        results = service.search(
-            SearchRequest.with_types(
-                query=args.query,
-                context=_context_from_args(args),
-                types=args.types,
-                limit=args.limit,
-                explain=args.explain,
-            )
-        )
+        results = service.search(_search_request(args, args.query))
         _print_json(
             {
                 "query": args.query,
                 "results": [_search_result_payload(result) for result in results],
-            },
-                    )
+            }
+        )
         return 0
 
     if args.command == "search-many":
@@ -188,22 +171,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 types=args.types,
                 limit=args.limit,
                 explain=args.explain,
-                include_deleted=args.include_deleted,
             )
         )
         _print_json(
             {
                 "queries": args.queries,
                 "results": [_search_result_payload(result) for result in results],
-            },
-                    )
+            }
+        )
         return 0
 
     if args.command == "backup":
         destination = db.backup(args.destination)
-        _print_json(
-            {"source": str(db.path), "backup": str(destination)},
-                    )
+        _print_json({"source": str(db.path), "backup": str(destination)})
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")
@@ -220,11 +200,7 @@ def _add_context_fields(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--branch")
 
 
-def _add_memory_fields(
-    parser: argparse.ArgumentParser,
-    *,
-    require_core: bool,
-) -> None:
+def _add_memory_fields(parser: argparse.ArgumentParser, *, require_core: bool) -> None:
     parser.add_argument("--title")
     parser.add_argument("--content", required=require_core)
     parser.add_argument("--memory-type", required=require_core)
@@ -234,38 +210,24 @@ def _add_memory_fields(
     parser.add_argument("--source-ref")
 
 
+def _add_search_fields(parser: argparse.ArgumentParser) -> None:
+    _add_context_fields(parser)
+    parser.add_argument("--type", dest="types", action="append", default=[])
+    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--explain", action="store_true")
+
+
 def _memory_create_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    return {
-        "title": args.title or "",
-        "content": args.content,
-        "memory_type": args.memory_type,
-        "scope": args.scope,
-        "workspace": args.workspace,
-        "project": args.project,
-        "repo": args.repo,
-        "branch": args.branch,
-        "source_type": args.source_type,
-        "source_ref": args.source_ref,
-    }
+    values = {name: getattr(args, name) for name in _MEMORY_FIELDS}
+    values["title"] = values["title"] or ""
+    return values
 
 
 def _memory_update_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    field_map = {
-        "title": "title",
-        "content": "content",
-        "memory_type": "memory_type",
-        "scope": "scope",
-        "workspace": "workspace",
-        "project": "project",
-        "repo": "repo",
-        "branch": "branch",
-        "source_type": "source_type",
-        "source_ref": "source_ref",
-    }
     changes = {
-        target: getattr(args, source)
-        for source, target in field_map.items()
-        if getattr(args, source) is not None
+        name: getattr(args, name)
+        for name in _MEMORY_FIELDS
+        if getattr(args, name) is not None
     }
     if not changes:
         raise ValueError("update requires at least one mutable field")
@@ -278,6 +240,16 @@ def _context_from_args(args: argparse.Namespace) -> SearchContext:
         project=args.project,
         repo=args.repo,
         branch=args.branch,
+    )
+
+
+def _search_request(args: argparse.Namespace, query: str) -> SearchRequest:
+    return SearchRequest.with_types(
+        query=query,
+        context=_context_from_args(args),
+        types=args.types,
+        limit=args.limit,
+        explain=args.explain,
     )
 
 
