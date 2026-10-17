@@ -3,7 +3,6 @@ CREATE TABLE IF NOT EXISTS memories (
     title TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
     memory_type TEXT NOT NULL,
-    scope TEXT NOT NULL,
     workspace TEXT,
     project TEXT,
     repo TEXT,
@@ -11,8 +10,7 @@ CREATE TABLE IF NOT EXISTS memories (
     source_type TEXT,
     source_ref TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS aliases (
