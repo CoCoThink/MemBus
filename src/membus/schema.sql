@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value)
-VALUES ('schema_version', '1');
+VALUES ('schema_version', '2');
 
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
@@ -21,28 +21,12 @@ CREATE TABLE IF NOT EXISTS memories (
     repo TEXT,
     branch TEXT,
 
-    status TEXT NOT NULL DEFAULT 'active',
-
-    importance REAL NOT NULL DEFAULT 0.5,
-    confidence REAL NOT NULL DEFAULT 1.0,
-    trust REAL NOT NULL DEFAULT 0.5,
-
     source_type TEXT,
     source_ref TEXT,
 
-    valid_from TEXT,
-    valid_until TEXT,
-    supersedes_id TEXT,
-
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    deleted_at TEXT,
-
-    CHECK (importance >= 0.0 AND importance <= 1.0),
-    CHECK (confidence >= 0.0 AND confidence <= 1.0),
-    CHECK (trust >= 0.0 AND trust <= 1.0),
-
-    FOREIGN KEY (supersedes_id) REFERENCES memories(id)
+    deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS aliases (
@@ -69,7 +53,6 @@ CREATE TABLE IF NOT EXISTS retrieval_logs (
     candidate_count INTEGER NOT NULL,
     result_ids_json TEXT NOT NULL,
     latency_ms REAL NOT NULL,
-    debug_json TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -98,21 +81,5 @@ AFTER DELETE ON memories BEGIN
     DELETE FROM memory_fts WHERE memory_id = old.id;
 END;
 
-CREATE INDEX IF NOT EXISTS idx_memories_status
-    ON memories(status);
-CREATE INDEX IF NOT EXISTS idx_memories_scope
-    ON memories(scope);
-CREATE INDEX IF NOT EXISTS idx_memories_workspace
-    ON memories(workspace);
-CREATE INDEX IF NOT EXISTS idx_memories_project
-    ON memories(project);
-CREATE INDEX IF NOT EXISTS idx_memories_repo
-    ON memories(repo);
-CREATE INDEX IF NOT EXISTS idx_memories_branch
-    ON memories(branch);
-CREATE INDEX IF NOT EXISTS idx_memories_updated_at
-    ON memories(updated_at);
 CREATE INDEX IF NOT EXISTS idx_events_memory_id
     ON memory_events(memory_id);
-CREATE INDEX IF NOT EXISTS idx_retrieval_logs_created_at
-    ON retrieval_logs(created_at);
