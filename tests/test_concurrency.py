@@ -8,11 +8,7 @@ from membus import MemBus
 
 
 def _writer_worker(db_path: str, worker_id: int, count: int) -> int:
-    bus = MemBus(
-        db_path,
-        busy_timeout_ms=10_000,
-        begin_retry_attempts=8,
-    )
+    bus = MemBus(db_path)
     for index in range(count):
         bus.put(
             title=f"worker-{worker_id}-{index}",
