@@ -35,7 +35,7 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
     ]) == 0
     searched = _json_output(capsys)
     assert searched["results"][0]["memory"]["id"] == memory_id
-    assert searched["results"][0]["signals"]["exact_match"] is True
+    assert searched["results"][0]["match"] == "exact"
 
     assert main(["--db", str(db), "get", memory_id]) == 0
     loaded = _json_output(capsys)
