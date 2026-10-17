@@ -54,7 +54,7 @@ branch
 
 Branch context requires repo context.
 
-A stored row is excluded when the query supplies the same dimension with a different value.
+A stored row is eligible only when each non-empty stored context dimension is present and equal in the query (`memory_context ⊆ query_context`). Missing query context therefore excludes more-specific memories.
 
 ## Transactions
 
