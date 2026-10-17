@@ -18,7 +18,7 @@ MemBus evaluates other projects against these questions:
 3. Can the system work without embeddings?
 4. Is lexical retrieval a first-class candidate source?
 5. Are project/repo scopes explicit?
-6. Are mutation history and provenance modeled?
+6. Is provenance available without forcing an audit subsystem?
 7. Can multiple agent clients share the same memory?
 8. Can indexes be rebuilt from canonical data?
 9. Does the design avoid coupling memory ownership to one adapter/protocol?
@@ -105,7 +105,7 @@ This project is the closest architectural reference for MemBus because it demons
 - FTS5/BM25
 - optional vector extensions instead of mandatory vector storage
 - provenance
-- mutation/event concepts
+- mutation/event concepts (not currently adopted)
 - project/context-aware ranking
 - later-stage temporal/canonical facts
 - RRF and multi-signal reranking
@@ -138,7 +138,7 @@ Examples of complexity MemBus does not want in V1:
 - `BEGIN IMMEDIATE` when appropriate
 - SQLite consistent backup
 - FTS5 synchronization
-- provenance/event ledgers
+- provenance metadata
 
 **Borrow the idea, not the full implementation:**
 
@@ -253,7 +253,7 @@ MemBus should first prove that stale/conflicting facts are a material production
 
 ### MemBus decision
 
-Use Graphiti as a future design reference for V7/V8, not as a V1 dependency.
+Use Graphiti only if temporal/graph failures become concrete; it is not a current dependency.
 
 ## 6. Cognee
 
@@ -308,7 +308,6 @@ MemBus itself owns:
 - scope hierarchy
 - retrieval contract
 - mutation semantics
-- lifecycle semantics
 - adapter-independent service API
 - complexity/evaluation gates
 
@@ -380,7 +379,7 @@ This review should be updated when:
 
 - a referenced project materially changes its storage model
 - a project provides a clearly superior compatibility layer
-- MemBus reaches a roadmap gate (vector, temporal, graph, ACL, extraction)
+- a measured failure justifies vector, temporal, graph, ACL, or extraction work
 - benchmark evidence suggests an adopted assumption is wrong
 
 The purpose of the review is to prevent both NIH syndrome and dependency-by-fashion.
