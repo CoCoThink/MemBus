@@ -85,7 +85,6 @@ class SearchRequest:
     types: tuple[str, ...] = ()
     limit: int = 10
     explain: bool = False
-    include_deleted: bool = False
 
     @classmethod
     def with_types(
@@ -96,7 +95,6 @@ class SearchRequest:
         types: Iterable[MemoryType | str] = (),
         limit: int = 10,
         explain: bool = False,
-        include_deleted: bool = False,
     ) -> "SearchRequest":
         return cls(
             query=query,
@@ -104,7 +102,6 @@ class SearchRequest:
             types=tuple(str(t) for t in types),
             limit=limit,
             explain=explain,
-            include_deleted=include_deleted,
         )
 
 
@@ -133,7 +130,6 @@ class SearchManyRequest:
         types: Iterable[MemoryType | str] = (),
         limit: int = 10,
         explain: bool = False,
-        include_deleted: bool = False,
     ) -> "SearchManyRequest":
         return cls(
             queries=tuple(queries),
