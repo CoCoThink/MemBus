@@ -229,3 +229,8 @@ The rule is simple:
 > ChatGPT Web is just another MCP client.
 
 Secure MCP Tunnel changes connectivity, not MemBus semantics.
+
+
+## 11. Deployment runbook
+
+For concrete install, health-check, tunnel-client, smoke-test, and optional systemd steps, see [`secure-tunnel-deployment.md`](secure-tunnel-deployment.md).
