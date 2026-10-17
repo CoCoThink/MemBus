@@ -1,8 +1,4 @@
-"""MCP adapter for MemBus.
-
-The adapter depends on the optional `mcp` extra. The MemBus core itself does
-not import MCP.
-"""
+"""MCP adapter for MemBus."""
 
 from __future__ import annotations
 
@@ -16,16 +12,12 @@ from ..models import MemoryCreate, SearchContext, SearchManyRequest, SearchReque
 from ..services.memory_service import MemoryService
 
 
-def build_server(
-    db_path: str | Path | None = None,
-    *,
-    retrieval_log_mode: str | None = None,
-):
+def build_server(db_path: str | Path | None = None):
     """Build an MCPServer bound to a MemBus database."""
 
     try:
         from mcp.server import MCPServer
-    except ImportError as exc:  # pragma: no cover - depends on optional install
+    except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
             "The MCP adapter requires the optional dependency: "
             "pip install 'membus[mcp]'"
@@ -37,13 +29,7 @@ def build_server(
         or (Path.home() / ".membus" / "memory.db")
     ).expanduser()
 
-    log_mode = (
-        retrieval_log_mode
-        or os.environ.get("MEMBUS_RETRIEVAL_LOG_MODE")
-        or "off"
-    )
-
-    service = MemoryService(Database(path), retrieval_log_mode=log_mode)
+    service = MemoryService(Database(path))
     mcp = MCPServer("MemBus")
 
     @mcp.tool()
@@ -58,9 +44,8 @@ def build_server(
         branch: str | None = None,
         source_type: str | None = None,
         source_ref: str | None = None,
-        actor: str | None = None,
     ) -> dict[str, Any]:
-        """Store an explicit durable memory in the user-owned MemBus store."""
+        """Store an explicit durable memory."""
 
         memory = service.put(
             MemoryCreate(
@@ -74,8 +59,7 @@ def build_server(
                 branch=branch,
                 source_type=source_type,
                 source_ref=source_ref,
-            ),
-            actor=actor,
+            )
         )
         return asdict(memory)
 
@@ -84,7 +68,7 @@ def build_server(
         memory_id: str,
         include_deleted: bool = False,
     ) -> dict[str, Any] | None:
-        """Get one memory by its stable ID."""
+        """Get one memory by stable ID."""
 
         memory = service.get(memory_id, include_deleted=include_deleted)
         return asdict(memory) if memory is not None else None
@@ -93,27 +77,18 @@ def build_server(
     def memory_update(
         memory_id: str,
         changes: dict[str, Any],
-        actor: str | None = None,
     ) -> dict[str, Any]:
-        """Update mutable fields of one memory.
+        """Update mutable fields of one memory."""
 
-        Use explicit keys in `changes`; a key with value null clears an optional
-        field, while an omitted key is left unchanged.
-        """
-
-        memory = service.update(memory_id, actor=actor, **changes)
-        return asdict(memory)
+        return asdict(service.update(memory_id, **changes))
 
     @mcp.tool()
-    def memory_delete(
-        memory_id: str,
-        actor: str | None = None,
-    ) -> dict[str, Any]:
-        """Logically delete a memory while preserving its audit history."""
+    def memory_delete(memory_id: str) -> dict[str, Any]:
+        """Logically delete one memory."""
 
         return {
             "memory_id": memory_id,
-            "deleted": service.delete(memory_id, actor=actor),
+            "deleted": service.delete(memory_id),
         }
 
     @mcp.tool()
@@ -126,24 +101,23 @@ def build_server(
         types: list[str] | None = None,
         limit: int = 10,
         explain: bool = False,
-        include_deleted: bool = False,
     ) -> dict[str, Any]:
-        """Search memories using exact/FTS lexical retrieval and scoped ranking."""
+        """Search memories using exact/FTS retrieval and scoped ranking."""
 
-        request = SearchRequest.with_types(
-            query=query,
-            context=SearchContext(
-                workspace=workspace,
-                project=project,
-                repo=repo,
-                branch=branch,
-            ),
-            types=types or (),
-            limit=limit,
-            explain=explain,
-            include_deleted=include_deleted,
+        results = service.search(
+            SearchRequest.with_types(
+                query=query,
+                context=SearchContext(
+                    workspace=workspace,
+                    project=project,
+                    repo=repo,
+                    branch=branch,
+                ),
+                types=types or (),
+                limit=limit,
+                explain=explain,
+            )
         )
-        results = service.search(request)
         return {
             "query": query,
             "results": [
@@ -166,24 +140,23 @@ def build_server(
         types: list[str] | None = None,
         limit: int = 10,
         explain: bool = False,
-        include_deleted: bool = False,
     ) -> dict[str, Any]:
-        """Search several lexical formulations in one adapter round trip."""
+        """Search several lexical formulations in one round trip."""
 
-        request = SearchManyRequest.from_queries(
-            queries,
-            context=SearchContext(
-                workspace=workspace,
-                project=project,
-                repo=repo,
-                branch=branch,
-            ),
-            types=types or (),
-            limit=limit,
-            explain=explain,
-            include_deleted=include_deleted,
+        results = service.search_many(
+            SearchManyRequest.from_queries(
+                queries,
+                context=SearchContext(
+                    workspace=workspace,
+                    project=project,
+                    repo=repo,
+                    branch=branch,
+                ),
+                types=types or (),
+                limit=limit,
+                explain=explain,
+            )
         )
-        results = service.search_many(request)
         return {
             "queries": queries,
             "results": [
