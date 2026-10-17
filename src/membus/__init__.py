@@ -1,3 +1,3 @@
 """MemBus public API."""
 
-from .core import MemBus, Memory, MemoryType
+from .core import MemBus, Memory
