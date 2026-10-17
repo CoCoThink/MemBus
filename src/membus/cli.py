@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .db import Database
+from .doctor import run_doctor
 from .evaluation import evaluate_dataset
 from .models import MemoryCreate, SearchContext, SearchManyRequest, SearchRequest
 from .services.memory_service import MemoryService
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="Initialize or verify the database.")
+    sub.add_parser("doctor", help="Check MemBus application and data health.")
 
     put = sub.add_parser("put", help="Store an explicit durable memory.")
     _add_memory_fields(put, require_core=True)
@@ -127,6 +129,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     db = Database(args.db)
+
+    if args.command == "doctor":
+        report = run_doctor(db)
+        _print_json(report.as_dict(), compact=args.compact)
+        return 0 if report.ok else 1
+
     service = MemoryService(db, retrieval_log_mode=args.retrieval_log_mode)
 
     if args.command == "init":
