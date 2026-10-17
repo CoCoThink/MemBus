@@ -7,32 +7,20 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-from ..db import Database
-from ..models import (
-    Memory,
-    MemoryCreate,
-    MemoryType,
-    Scope,
-    SearchManyRequest,
-    SearchRequest,
-    SearchResult,
-)
-from ..repository import MemoryRepository
+from ..models import Memory, MemoryCreate, MemoryType, SearchRequest, SearchResult
 from ..retrieval.lexical import (
     build_fts_or_query,
     expand_tokens,
     extract_tokens,
-    lexical_score_from_rank,
     normalize_text,
 )
-from ..retrieval.scope import scope_eligibility, validate_scope
+from ..store import SQLiteStore
 
 
 _MUTABLE_FIELDS = {
     "title",
     "content",
     "memory_type",
-    "scope",
     "workspace",
     "project",
     "repo",
@@ -43,60 +31,51 @@ _MUTABLE_FIELDS = {
 
 
 class MemoryService:
-    """Stable domain API used by protocol adapters."""
-
-    def __init__(self, db: Database) -> None:
-        self.db = db
-        self.db.initialize()
-        self.repository = MemoryRepository(db)
+    def __init__(self, store: SQLiteStore) -> None:
+        self.store = store
+        self.store.initialize()
 
     def put(self, create: MemoryCreate) -> Memory:
-        normalized = self._validate_create(create)
+        normalized = _normalize_create(create)
         now = _utcnow()
 
         memory = Memory(
             id=f"mem_{uuid.uuid4().hex}",
-            title=normalized.title.strip(),
-            content=normalized.content.strip(),
+            title=normalized.title,
+            content=normalized.content,
             memory_type=str(MemoryType(str(normalized.memory_type))),
-            scope=str(Scope(str(normalized.scope))),
-            workspace=_clean_optional(normalized.workspace),
-            project=_clean_optional(normalized.project),
-            repo=_clean_optional(normalized.repo),
-            branch=_clean_optional(normalized.branch),
-            source_type=_clean_optional(normalized.source_type),
-            source_ref=_clean_optional(normalized.source_ref),
+            workspace=normalized.workspace,
+            project=normalized.project,
+            repo=normalized.repo,
+            branch=normalized.branch,
+            source_type=normalized.source_type,
+            source_ref=normalized.source_ref,
             created_at=now,
             updated_at=now,
-            deleted_at=None,
         )
-        self.repository.create(memory)
+        self.store.create(memory)
         return memory
 
-    def get(self, memory_id: str, *, include_deleted: bool = False) -> Memory | None:
-        return self.repository.get(memory_id, include_deleted=include_deleted)
+    def get(self, memory_id: str) -> Memory | None:
+        return self.store.get(memory_id)
 
     def update(self, memory_id: str, **changes: Any) -> Memory:
         unknown = set(changes) - _MUTABLE_FIELDS
         if unknown:
             raise ValueError(f"Unsupported mutable fields: {sorted(unknown)}")
 
-        current = self.repository.get(memory_id, include_deleted=True)
+        current = self.store.get(memory_id)
         if current is None:
             raise KeyError(memory_id)
-        if current.deleted_at is not None:
-            raise ValueError("Cannot update a logically deleted memory")
         if not changes:
             return current
 
         proposed = replace(current, **changes, updated_at=_utcnow())
-
-        normalized = self._validate_create(
+        normalized = _normalize_create(
             MemoryCreate(
                 title=proposed.title,
                 content=proposed.content,
                 memory_type=proposed.memory_type,
-                scope=proposed.scope,
                 workspace=proposed.workspace,
                 project=proposed.project,
                 repo=proposed.repo,
@@ -106,173 +85,106 @@ class MemoryService:
             )
         )
 
-        final_memory = replace(
-            proposed,
-            title=normalized.title.strip(),
-            content=normalized.content.strip(),
-            memory_type=str(MemoryType(str(normalized.memory_type))),
-            scope=str(Scope(str(normalized.scope))),
-            workspace=_clean_optional(normalized.workspace),
-            project=_clean_optional(normalized.project),
-            repo=_clean_optional(normalized.repo),
-            branch=_clean_optional(normalized.branch),
-            source_type=_clean_optional(normalized.source_type),
-            source_ref=_clean_optional(normalized.source_ref),
+        return self.store.update(
+            replace(
+                proposed,
+                title=normalized.title,
+                content=normalized.content,
+                memory_type=str(MemoryType(str(normalized.memory_type))),
+                workspace=normalized.workspace,
+                project=normalized.project,
+                repo=normalized.repo,
+                branch=normalized.branch,
+                source_type=normalized.source_type,
+                source_ref=normalized.source_ref,
+            )
         )
 
-        return self.repository.update(final_memory)
-
     def delete(self, memory_id: str) -> bool:
-        return self.repository.logical_delete(memory_id, deleted_at=_utcnow())
+        return self.store.delete(memory_id)
 
     def put_alias(self, alias: str, canonical: str) -> None:
         alias = normalize_text(alias)
         canonical = normalize_text(canonical)
         if not alias or not canonical:
             raise ValueError("alias and canonical must be non-empty")
-        self.repository.put_alias(alias, canonical)
+        self.store.put_alias(alias, canonical)
 
     def search(self, request: SearchRequest) -> list[SearchResult]:
-        return self._search_core(request)
-
-    def search_many(self, request: SearchManyRequest) -> list[SearchResult]:
-        if not request.queries:
-            return []
-        if not (1 <= request.limit <= 100):
-            raise ValueError("limit must be between 1 and 100")
-
-        merged: dict[str, SearchResult] = {}
-
-        for query in request.queries:
-            results = self._search_core(
-                SearchRequest(
-                    query=query,
-                    context=request.context,
-                    types=request.types,
-                    limit=min(100, max(request.limit * 5, 25)),
-                    explain=request.explain,
-                )
-            )
-
-            for result in results:
-                previous = merged.get(result.memory.id)
-                if previous is None or result.score > previous.score:
-                    merged[result.memory.id] = result
-
-        return sorted(
-            merged.values(),
-            key=lambda result: (-result.score, result.memory.id),
-        )[: request.limit]
-
-    def _search_core(
-        self,
-        request: SearchRequest,
-    ) -> list[SearchResult]:
         query = normalize_text(request.query)
         if not query:
             return []
         if not (1 <= request.limit <= 100):
             raise ValueError("limit must be between 1 and 100")
 
-        types = self._normalize_types(request.types)
-        pool_limit = min(500, max(50, request.limit * 8))
+        _validate_context(request.context)
+        types = tuple(
+            dict.fromkeys(str(MemoryType(str(value))) for value in request.types)
+        )
 
-        exact_memories = self.repository.exact_candidates(
+        exact = self.store.exact_candidates(
             query,
+            context=request.context,
             types=types,
-            limit=pool_limit,
+            limit=request.limit,
         )
 
         tokens = extract_tokens(query)
-        aliases = self.repository.alias_map(tokens)
+        aliases = self.store.alias_map(tokens)
         expanded_tokens = expand_tokens(tokens, aliases)
         fts_query = build_fts_or_query(expanded_tokens)
-
-        fts_memories: list[tuple[Memory, float]] = []
-        if fts_query is not None:
-            fts_memories = self.repository.fts_candidates(
+        fts = (
+            self.store.fts_candidates(
                 fts_query,
+                context=request.context,
                 types=types,
-                limit=pool_limit,
+                limit=request.limit,
             )
+            if fts_query is not None
+            else []
+        )
 
-        candidates: dict[str, dict[str, Any]] = {}
+        results: list[SearchResult] = []
+        seen: set[str] = set()
 
-        for memory in exact_memories:
-            candidates[memory.id] = {
-                "memory": memory,
-                "exact_match": True,
-                "fts_rank": None,
-            }
+        for memory in exact:
+            seen.add(memory.id)
+            results.append(SearchResult(memory=memory, match="exact"))
 
-        for rank, (memory, raw_bm25) in enumerate(fts_memories):
-            item = candidates.setdefault(
-                memory.id,
-                {
-                    "memory": memory,
-                    "exact_match": False,
-                    "fts_rank": rank,
-                },
-            )
-            previous_rank = item["fts_rank"]
-            if previous_rank is None or rank < previous_rank:
-                item["fts_rank"] = rank
-            item["raw_bm25"] = raw_bm25
-
-        ranked: list[SearchResult] = []
-        for item in candidates.values():
-            memory: Memory = item["memory"]
-            scope = scope_eligibility(memory, request.context)
-            if not scope.eligible:
+        for memory in fts:
+            if memory.id in seen:
                 continue
+            results.append(SearchResult(memory=memory, match="fts"))
+            if len(results) >= request.limit:
+                break
 
-            exact_match = bool(item["exact_match"])
-            if exact_match:
-                lexical = 1.0
-            else:
-                fts_rank = item["fts_rank"]
-                if fts_rank is None:
-                    continue
-                lexical = lexical_score_from_rank(int(fts_rank))
+        return results[: request.limit]
 
-            score = lexical
-            signals: dict[str, Any] = {
-                "lexical": lexical,
-                "exact_match": exact_match,
-                "scope_reason": scope.reason,
-            }
-            if "raw_bm25" in item:
-                signals["raw_bm25"] = item["raw_bm25"]
-            if aliases:
-                signals["alias_expansion"] = {
-                    token: sorted(values)
-                    for token, values in aliases.items()
-                    if values
-                }
 
-            ranked.append(
-                SearchResult(
-                    memory=memory,
-                    score=score,
-                    signals=signals if request.explain else {},
-                )
-            )
+def _normalize_create(create: MemoryCreate) -> MemoryCreate:
+    content = create.content.strip()
+    if not content:
+        raise ValueError("content must contain non-whitespace text")
 
-        ranked.sort(key=lambda result: (-result.score, result.memory.id))
-        return ranked[: request.limit]
+    memory_type = str(MemoryType(str(create.memory_type)))
+    normalized = MemoryCreate(
+        title=create.title.strip(),
+        content=content,
+        memory_type=memory_type,
+        workspace=_clean_optional(create.workspace),
+        project=_clean_optional(create.project),
+        repo=_clean_optional(create.repo),
+        branch=_clean_optional(create.branch),
+        source_type=_clean_optional(create.source_type),
+        source_ref=_clean_optional(create.source_ref),
+    )
+    _validate_context(normalized)
+    return normalized
 
-    @staticmethod
-    def _normalize_types(types: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(str(MemoryType(str(value))) for value in types))
 
-    @staticmethod
-    def _validate_create(create: MemoryCreate) -> MemoryCreate:
-        if not create.content or not create.content.strip():
-            raise ValueError("content must contain non-whitespace text")
-
-        MemoryType(str(create.memory_type))
-        validate_scope(create)
-        return create
+def _validate_context(value: Any) -> None:
+    if getattr(value, "branch", None) and not getattr(value, "repo", None):
+        raise ValueError("branch requires repo")
 
 
 def _clean_optional(value: str | None) -> str | None:
