@@ -192,16 +192,16 @@ class MemoryRepository:
 
         return result
 
-    def put_alias(self, alias: str, canonical: str, *, created_at: str) -> None:
+    def put_alias(self, alias: str, canonical: str) -> None:
         with self.db.transaction() as conn:
             conn.execute(
                 """
-                INSERT INTO aliases(alias, canonical, created_at)
-                VALUES (?, ?, ?)
+                INSERT INTO aliases(alias, canonical)
+                VALUES (?, ?)
                 ON CONFLICT(alias) DO UPDATE SET
                     canonical = excluded.canonical
                 """,
-                (alias.casefold(), canonical.casefold(), created_at),
+                (alias.casefold(), canonical.casefold()),
             )
 
 
