@@ -1,4 +1,4 @@
-"""MCP v2 adapter for MemBus.
+"""MCP adapter for MemBus.
 
 The adapter depends on the optional `mcp` extra. The MemBus core itself does
 not import MCP.
@@ -56,14 +56,8 @@ def build_server(
         project: str | None = None,
         repo: str | None = None,
         branch: str | None = None,
-        importance: float = 0.5,
-        confidence: float = 1.0,
-        trust: float = 0.5,
         source_type: str | None = None,
         source_ref: str | None = None,
-        valid_from: str | None = None,
-        valid_until: str | None = None,
-        supersedes_id: str | None = None,
         actor: str | None = None,
     ) -> dict[str, Any]:
         """Store an explicit durable memory in the user-owned MemBus store."""
@@ -78,14 +72,8 @@ def build_server(
                 project=project,
                 repo=repo,
                 branch=branch,
-                importance=importance,
-                confidence=confidence,
-                trust=trust,
                 source_type=source_type,
                 source_ref=source_ref,
-                valid_from=valid_from,
-                valid_until=valid_until,
-                supersedes_id=supersedes_id,
             ),
             actor=actor,
         )
