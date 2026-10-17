@@ -10,11 +10,10 @@ from membus.models import SearchManyRequest
 
 @pytest.fixture
 def service(tmp_path: Path) -> MemoryService:
-    db = Database(tmp_path / "memory.db")
-    return MemoryService(db)
+    return MemoryService(Database(tmp_path / "memory.db"))
 
 
-def test_crud_and_event_ledger(service: MemoryService) -> None:
+def test_crud(service: MemoryService) -> None:
     memory = service.put(
         MemoryCreate(
             title="Generated client rule",
@@ -24,8 +23,7 @@ def test_crud_and_event_ledger(service: MemoryService) -> None:
             project="payment",
             repo="payment-api",
             source_type="user_rule",
-        ),
-        actor="test",
+        )
     )
 
     loaded = service.get(memory.id)
@@ -35,24 +33,17 @@ def test_crud_and_event_ledger(service: MemoryService) -> None:
     updated = service.update(
         memory.id,
         content="generated/client.ts is generated from OpenAPI. Never edit it manually.",
-        actor="test",
     )
     assert "Never edit" in updated.content
 
-    events = service.repository.list_events(memory.id)
-    assert [event["event_type"] for event in events] == ["created", "updated"]
-
-    assert service.delete(memory.id, actor="test") is True
+    assert service.delete(memory.id) is True
     assert service.get(memory.id) is None
-    assert service.get(memory.id, include_deleted=True) is not None
-    assert service.delete(memory.id, actor="test") is False
 
-    events = service.repository.list_events(memory.id)
-    assert [event["event_type"] for event in events] == [
-        "created",
-        "updated",
-        "deleted",
-    ]
+    deleted = service.get(memory.id, include_deleted=True)
+    assert deleted is not None
+    assert deleted.deleted_at is not None
+
+    assert service.delete(memory.id) is False
 
 
 def test_project_scope_mismatch_is_excluded(service: MemoryService) -> None:
@@ -153,14 +144,9 @@ def test_logical_delete_is_excluded_from_search(service: MemoryService) -> None:
     service.delete(memory.id)
 
     assert service.search(SearchRequest(query="temporary-marker")) == []
-    deleted_results = service.search(
-        SearchRequest(query="temporary-marker", include_deleted=True)
-    )
-    assert deleted_results
-    assert deleted_results[0].memory.id == memory.id
 
 
-def test_multi_query_fuses_candidates(service: MemoryService) -> None:
+def test_multi_query_unions_candidates(service: MemoryService) -> None:
     primary = service.put(
         MemoryCreate(
             title="Settlement concurrency",
@@ -242,31 +228,6 @@ def test_invalid_scope_is_rejected(
                 **kwargs,
             )
         )
-
-
-def test_retrieval_logging_can_be_metadata_only(tmp_path: Path) -> None:
-    service = MemoryService(
-        Database(tmp_path / "memory.db"),
-        retrieval_log_mode="metadata-only",
-    )
-    service.put(
-        MemoryCreate(
-            content="PostgreSQL connection pool",
-            memory_type="fact",
-            scope="global",
-        )
-    )
-
-    service.search(SearchRequest(query="PostgreSQL"))
-
-    with service.db.connection() as conn:
-        row = conn.execute(
-            "SELECT query, candidate_count, result_ids_json FROM retrieval_logs"
-        ).fetchone()
-
-    assert row is not None
-    assert row["query"] is None
-    assert row["candidate_count"] >= 1
 
 
 def test_parent_workspace_mismatch_excludes_same_named_project(
