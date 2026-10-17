@@ -347,15 +347,22 @@ SQLite configuration:
 - explicit transactions
 - bounded retry for transient `SQLITE_BUSY`
 
-For mutations that perform read-before-write decisions:
+All application-level write transactions default to:
 
 ```sql
 BEGIN IMMEDIATE;
 ```
 
-should be preferred to avoid a deferred-transaction lock upgrade race.
+This is deliberate. Multi-process stress testing reproduced `database is locked`
+failures with deferred write transactions when independent processes attempted
+to upgrade to the writer lock at their first mutation.
 
-Ordinary independent inserts/reads may use normal transactions where safe.
+SQLite permits only one writer at a time anyway, so reserving the writer slot at
+the transaction boundary does not remove useful write parallelism. It moves
+contention to a predictable point where `busy_timeout` and bounded retry can
+queue writers safely.
+
+Read-only operations do not open a write transaction.
 
 ## 9. Backup model
 
