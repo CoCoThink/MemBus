@@ -1,4 +1,4 @@
-"""Application service for MemBus V1."""
+"""Application service for MemBus."""
 
 from __future__ import annotations
 
@@ -39,14 +39,8 @@ _MUTABLE_FIELDS = {
     "project",
     "repo",
     "branch",
-    "importance",
-    "confidence",
-    "trust",
     "source_type",
     "source_ref",
-    "valid_from",
-    "valid_until",
-    "supersedes_id",
 }
 
 
@@ -83,15 +77,8 @@ class MemoryService:
             project=_clean_optional(normalized.project),
             repo=_clean_optional(normalized.repo),
             branch=_clean_optional(normalized.branch),
-            status="active",
-            importance=float(normalized.importance),
-            confidence=float(normalized.confidence),
-            trust=float(normalized.trust),
             source_type=_clean_optional(normalized.source_type),
             source_ref=_clean_optional(normalized.source_ref),
-            valid_from=_clean_optional(normalized.valid_from),
-            valid_until=_clean_optional(normalized.valid_until),
-            supersedes_id=_clean_optional(normalized.supersedes_id),
             created_at=now,
             updated_at=now,
             deleted_at=None,
@@ -116,7 +103,7 @@ class MemoryService:
         current = self.repository.get(memory_id, include_deleted=True)
         if current is None:
             raise KeyError(memory_id)
-        if current.status == "deleted":
+        if current.deleted_at is not None:
             raise ValueError("Cannot update a logically deleted memory")
         if not changes:
             return current
@@ -127,25 +114,20 @@ class MemoryService:
             updated_at=_utcnow(),
         )
 
-        create_shape = MemoryCreate(
-            title=proposed.title,
-            content=proposed.content,
-            memory_type=proposed.memory_type,
-            scope=proposed.scope,
-            workspace=proposed.workspace,
-            project=proposed.project,
-            repo=proposed.repo,
-            branch=proposed.branch,
-            importance=proposed.importance,
-            confidence=proposed.confidence,
-            trust=proposed.trust,
-            source_type=proposed.source_type,
-            source_ref=proposed.source_ref,
-            valid_from=proposed.valid_from,
-            valid_until=proposed.valid_until,
-            supersedes_id=proposed.supersedes_id,
+        normalized = self._validate_create(
+            MemoryCreate(
+                title=proposed.title,
+                content=proposed.content,
+                memory_type=proposed.memory_type,
+                scope=proposed.scope,
+                workspace=proposed.workspace,
+                project=proposed.project,
+                repo=proposed.repo,
+                branch=proposed.branch,
+                source_type=proposed.source_type,
+                source_ref=proposed.source_ref,
+            )
         )
-        normalized = self._validate_create(create_shape)
 
         final_memory = replace(
             proposed,
@@ -159,9 +141,6 @@ class MemoryService:
             branch=_clean_optional(normalized.branch),
             source_type=_clean_optional(normalized.source_type),
             source_ref=_clean_optional(normalized.source_ref),
-            valid_from=_clean_optional(normalized.valid_from),
-            valid_until=_clean_optional(normalized.valid_until),
-            supersedes_id=_clean_optional(normalized.supersedes_id),
         )
 
         changed_payload = {
@@ -212,7 +191,7 @@ class MemoryService:
             raise ValueError("limit must be between 1 and 100")
 
         started = time.perf_counter()
-        merged: dict[str, tuple[SearchResult, int]] = {}
+        merged: dict[str, SearchResult] = {}
         total_candidates = 0
 
         for query in request.queries:
@@ -221,7 +200,7 @@ class MemoryService:
                 context=request.context,
                 types=request.types,
                 limit=min(100, max(request.limit * 5, 25)),
-                explain=True,
+                explain=request.explain,
                 include_deleted=request.include_deleted,
             )
             results, candidate_count = self._search_unlogged(single)
@@ -229,31 +208,11 @@ class MemoryService:
 
             for result in results:
                 previous = merged.get(result.memory.id)
-                if previous is None:
-                    merged[result.memory.id] = (result, 1)
-                    continue
+                if previous is None or result.score > previous.score:
+                    merged[result.memory.id] = result
 
-                best, hits = previous
-                if result.score > best.score:
-                    best = result
-                merged[result.memory.id] = (best, hits + 1)
-
-        fused: list[SearchResult] = []
-        for best, hits in merged.values():
-            bonus = min(0.10, 0.03 * max(0, hits - 1))
-            score = min(1.0, best.score + bonus)
-            signals = dict(best.signals)
-            signals["query_hits"] = hits
-            signals["multi_query_bonus"] = bonus
-            fused.append(
-                SearchResult(
-                    memory=best.memory,
-                    score=score,
-                    signals=signals if request.explain else {},
-                )
-            )
-
-        fused.sort(
+        fused = sorted(
+            merged.values(),
             key=lambda result: (result.score, result.memory.updated_at),
             reverse=True,
         )
@@ -343,7 +302,6 @@ class MemoryService:
                 lexical = lexical_score_from_rank(int(fts_rank))
 
             score, signals = final_score(
-                memory=memory,
                 lexical=lexical,
                 scope=scope.score,
                 exact_match=exact_match,
@@ -390,10 +348,6 @@ class MemoryService:
             candidate_count=candidate_count,
             result_ids=[result.memory.id for result in results],
             latency_ms=latency_ms,
-            debug={
-                "types": list(request.types),
-                "limit": request.limit,
-            },
             created_at=_utcnow(),
         )
 
@@ -420,20 +374,12 @@ class MemoryService:
             candidate_count=candidate_count,
             result_ids=[result.memory.id for result in results],
             latency_ms=latency_ms,
-            debug={
-                "query_count": len(queries),
-                "types": list(request.types),
-                "limit": request.limit,
-            },
             created_at=_utcnow(),
         )
 
     @staticmethod
     def _normalize_types(types: tuple[str, ...]) -> tuple[str, ...]:
-        normalized: list[str] = []
-        for value in types:
-            normalized.append(str(MemoryType(str(value))))
-        return tuple(dict.fromkeys(normalized))
+        return tuple(dict.fromkeys(str(MemoryType(str(value))) for value in types))
 
     @staticmethod
     def _validate_create(create: MemoryCreate) -> MemoryCreate:
@@ -442,12 +388,6 @@ class MemoryService:
 
         MemoryType(str(create.memory_type))
         validate_scope(create)
-
-        for name in ("importance", "confidence", "trust"):
-            value = float(getattr(create, name))
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be between 0 and 1")
-
         return create
 
 
