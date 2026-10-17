@@ -10,18 +10,17 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
-from .db import Database
 from .doctor import run_doctor
 from .evaluation import evaluate_dataset
-from .models import MemoryCreate, SearchContext, SearchManyRequest, SearchRequest
+from .models import MemoryCreate, SearchContext, SearchRequest
 from .services.memory_service import MemoryService
+from .store import SQLiteStore
 
 
 _MEMORY_FIELDS = (
     "title",
     "content",
     "memory_type",
-    "scope",
     "workspace",
     "project",
     "repo",
@@ -44,7 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         help="SQLite canonical database path.",
     )
-
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="Check MemBus application and data health.")
@@ -54,13 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     get = sub.add_parser("get", help="Get one memory by ID.")
     get.add_argument("memory_id")
-    get.add_argument("--include-deleted", action="store_true")
 
     update = sub.add_parser("update", help="Update mutable fields of a memory.")
     update.add_argument("memory_id")
     _add_memory_fields(update, require_core=False)
 
-    delete = sub.add_parser("delete", help="Logically delete a memory.")
+    delete = sub.add_parser("delete", help="Delete a memory.")
     delete.add_argument("memory_id")
 
     alias = sub.add_parser("alias", help="Add or replace a deterministic alias.")
@@ -69,11 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = sub.add_parser("search", help="Search the memory store.")
     search.add_argument("query")
-    _add_search_fields(search)
-
-    many = sub.add_parser("search-many", help="Search several query formulations.")
-    many.add_argument("queries", nargs="+")
-    _add_search_fields(many)
+    _add_context_fields(search)
+    search.add_argument("--type", dest="types", action="append", default=[])
+    search.add_argument("--limit", type=int, default=10)
 
     backup = sub.add_parser("backup", help="Create a consistent SQLite backup.")
     backup.add_argument("destination")
@@ -117,21 +112,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"evaluation gate failed: {failure}", file=sys.stderr)
         return 2 if failures else 0
 
-    db = Database(args.db)
+    store = SQLiteStore(args.db)
 
     if args.command == "doctor":
-        report = run_doctor(db)
-        _print_json(report.as_dict())
-        return 0 if report.ok else 1
+        report = run_doctor(store)
+        _print_json(report)
+        return 0 if report["ok"] else 1
 
-    service = MemoryService(db)
+    service = MemoryService(store)
 
     if args.command == "put":
         _print_json(asdict(service.put(MemoryCreate(**_memory_create_kwargs(args)))))
         return 0
 
     if args.command == "get":
-        memory = service.get(args.memory_id, include_deleted=args.include_deleted)
+        memory = service.get(args.memory_id)
         if memory is None:
             _print_json({"error": "not_found", "id": args.memory_id})
             return 1
@@ -139,8 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "update":
-        memory = service.update(args.memory_id, **_memory_update_kwargs(args))
-        _print_json(asdict(memory))
+        _print_json(asdict(service.update(args.memory_id, **_memory_update_kwargs(args))))
         return 0
 
     if args.command == "delete":
@@ -154,36 +148,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "search":
-        results = service.search(_search_request(args, args.query))
-        _print_json(
-            {
-                "query": args.query,
-                "results": [_search_result_payload(result) for result in results],
-            }
-        )
-        return 0
-
-    if args.command == "search-many":
-        results = service.search_many(
-            SearchManyRequest.from_queries(
-                args.queries,
+        results = service.search(
+            SearchRequest(
+                query=args.query,
                 context=_context_from_args(args),
-                types=args.types,
+                types=tuple(args.types),
                 limit=args.limit,
-                explain=args.explain,
             )
         )
         _print_json(
             {
-                "queries": args.queries,
-                "results": [_search_result_payload(result) for result in results],
+                "query": args.query,
+                "results": [
+                    {"memory": asdict(result.memory), "match": result.match}
+                    for result in results
+                ],
             }
         )
         return 0
 
     if args.command == "backup":
-        destination = db.backup(args.destination)
-        _print_json({"source": str(db.path), "backup": str(destination)})
+        destination = store.backup(args.destination)
+        _print_json({"source": str(store.path), "backup": str(destination)})
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")
@@ -204,17 +190,9 @@ def _add_memory_fields(parser: argparse.ArgumentParser, *, require_core: bool) -
     parser.add_argument("--title")
     parser.add_argument("--content", required=require_core)
     parser.add_argument("--memory-type", required=require_core)
-    parser.add_argument("--scope", required=require_core)
     _add_context_fields(parser)
     parser.add_argument("--source-type")
     parser.add_argument("--source-ref")
-
-
-def _add_search_fields(parser: argparse.ArgumentParser) -> None:
-    _add_context_fields(parser)
-    parser.add_argument("--type", dest="types", action="append", default=[])
-    parser.add_argument("--limit", type=int, default=10)
-    parser.add_argument("--explain", action="store_true")
 
 
 def _memory_create_kwargs(args: argparse.Namespace) -> dict[str, Any]:
@@ -241,24 +219,6 @@ def _context_from_args(args: argparse.Namespace) -> SearchContext:
         repo=args.repo,
         branch=args.branch,
     )
-
-
-def _search_request(args: argparse.Namespace, query: str) -> SearchRequest:
-    return SearchRequest.with_types(
-        query=query,
-        context=_context_from_args(args),
-        types=args.types,
-        limit=args.limit,
-        explain=args.explain,
-    )
-
-
-def _search_result_payload(result: Any) -> dict[str, Any]:
-    return {
-        "memory": asdict(result.memory),
-        "score": result.score,
-        "signals": result.signals,
-    }
 
 
 def _print_json(payload: Any) -> None:
