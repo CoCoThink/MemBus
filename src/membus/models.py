@@ -37,15 +37,6 @@ class SearchContext:
     repo: str | None = None
     branch: str | None = None
 
-    def as_dict(self) -> dict[str, str | None]:
-        return {
-            "workspace": self.workspace,
-            "project": self.project,
-            "repo": self.repo,
-            "branch": self.branch,
-        }
-
-
 @dataclass(frozen=True, slots=True)
 class MemoryCreate:
     content: str
@@ -119,7 +110,6 @@ class SearchManyRequest:
     types: tuple[str, ...] = ()
     limit: int = 10
     explain: bool = False
-    include_deleted: bool = False
 
     @classmethod
     def from_queries(
@@ -137,5 +127,4 @@ class SearchManyRequest:
             types=tuple(str(t) for t in types),
             limit=limit,
             explain=explain,
-            include_deleted=include_deleted,
         )
