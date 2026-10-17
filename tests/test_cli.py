@@ -63,9 +63,9 @@ def test_cli_eval_gate(capsys) -> None:
         str(dataset),
         "--min-recall-5", "0.95",
         "--min-recall-10", "0.95",
-        "--max-wrong-scope-rate", "0.0",
+        "--max-wrong-context-rate", "0.0",
     ]) == 0
 
     report = _json_output(capsys)
     assert report["recall_at_5"] >= 0.95
-    assert report["wrong_scope_hit_rate"] == 0.0
+    assert report["wrong_context_hit_rate"] == 0.0
