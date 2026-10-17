@@ -61,6 +61,53 @@ def test_context_mismatch_is_excluded(bus: MemBus) -> None:
     assert wrong.id not in ids
 
 
+
+
+def test_missing_workspace_does_not_match_workspace_specific_memory(bus: MemBus) -> None:
+    global_memory = bus.put(
+        content="context-containment-marker general payment guidance.",
+        memory_type="note",
+        project="payment",
+    )
+    bus.put(
+        content="context-containment-marker personal payment guidance.",
+        memory_type="note",
+        workspace="personal",
+        project="payment",
+    )
+
+    results = bus.search(
+        "context-containment-marker",
+        project="payment",
+    )
+
+    assert [memory.id for memory in results] == [global_memory.id]
+
+
+def test_missing_repo_does_not_match_repo_specific_memory(bus: MemBus) -> None:
+    project_memory = bus.put(
+        content="repo-containment-marker project deployment guidance.",
+        memory_type="procedure",
+        workspace="work",
+        project="payment",
+    )
+    bus.put(
+        content="repo-containment-marker payment-api deployment guidance.",
+        memory_type="procedure",
+        workspace="work",
+        project="payment",
+        repo="payment-api",
+    )
+
+    results = bus.search(
+        "repo-containment-marker",
+        workspace="work",
+        project="payment",
+    )
+
+    assert [memory.id for memory in results] == [project_memory.id]
+
+
 def test_exact_identifier_is_retrievable(bus: MemBus) -> None:
     memory = bus.put(
         title="BUG-18472",
