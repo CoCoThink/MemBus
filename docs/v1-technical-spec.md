@@ -7,33 +7,26 @@ Status: development baseline
 - Python 3.11+
 - SQLite + FTS5
 - standard-library `sqlite3`
-- UTC ISO-8601 timestamps
-- optional MCP dependency outside the core
+- optional MCP dependency
 
-No network, model API, embedding library, or hosted service is required by the core.
-
-## 2. Package layout
+## 2. Package shape
 
 ```text
 src/membus/
-├── db.py
+├── store.py
 ├── models.py
-├── repository.py
 ├── schema.sql
 ├── doctor.py
 ├── evaluation.py
 ├── retrieval/
-│   ├── lexical.py
-│   └── scope.py
+│   └── lexical.py
 ├── services/
 │   └── memory_service.py
 └── adapters/
     └── mcp_server.py
 ```
 
-There is no migration package before first deployment.
-
-## 3. Database schema
+## 3. Schema
 
 ```sql
 CREATE TABLE memories (
@@ -41,7 +34,6 @@ CREATE TABLE memories (
     title TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
     memory_type TEXT NOT NULL,
-    scope TEXT NOT NULL,
     workspace TEXT,
     project TEXT,
     repo TEXT,
@@ -49,8 +41,7 @@ CREATE TABLE memories (
     source_type TEXT,
     source_ref TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE aliases (
@@ -66,134 +57,76 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 );
 ```
 
-Triggers synchronize `memory_fts` after canonical insert, title/content update, and physical delete.
+FTS triggers synchronize insert, title/content update, and delete.
 
-A memory is active when:
+## 4. Context
 
-```sql
-deleted_at IS NULL
+There is no scope enum or column.
+
+Specificity is inferred from populated context:
+
+```text
+workspace
+project
+repo
+branch
 ```
 
-No event table, retrieval-log table, schema-version table, or speculative lifecycle/scoring columns exist.
+Stored and query branch context requires repo context.
 
-## 4. Initialization
-
-`Database.initialize()`:
-
-1. opens/creates the SQLite file
-2. enables WAL
-3. executes the idempotent current `schema.sql`
-
-During pre-deployment development, incompatible schema changes may require deleting/recreating local databases. Compatibility machinery is added only before a real compatibility commitment.
+Search excludes a row only when the row and query both supply the same dimension and values differ.
 
 ## 5. Transactions
 
-Connections configure:
+Connections use WAL, busy timeout, and `synchronous=NORMAL`.
 
-```text
-busy_timeout = 5000 ms
-synchronous = NORMAL
-```
-
-Read-only operations use ordinary connections.
-
-Every application write uses:
+Every application mutation uses:
 
 ```sql
 BEGIN IMMEDIATE;
 ```
 
-with bounded retry for transient busy/locked errors.
+with bounded retry for busy/locked errors.
 
-## 6. Domain validation
-
-Supported memory types:
-
-```text
-fact
-decision
-preference
-procedure
-incident
-failure
-note
-```
-
-Supported scopes:
-
-| scope | required context |
-|---|---|
-| global | none |
-| workspace | workspace |
-| project | project |
-| repo | repo |
-| branch | repo + branch |
-
-`content` must contain non-whitespace text.
-
-IDs are generated as:
-
-```text
-mem_<uuid4hex>
-```
-
-## 7. Retrieval
+## 6. Retrieval
 
 ```text
 query
-  ├─ exact full-query substring
-  └─ safe tokens -> aliases -> FTS5
+  ├── exact substring
+  └── safe tokens -> aliases -> FTS5
           │
           ▼
-     candidate union
+      SQL context filter
           │
           ▼
-     scope eligibility
-          │
-          ▼
-     lexical relevance
+ exact first, then BM25
           │
           ▼
         Top-K
 ```
 
-Exact matches receive lexical score `1.0`.
+Search returns:
 
-FTS candidates are ordered by SQLite BM25 and converted to a bounded rank-based lexical score.
+```json
+{
+  "memory": {"id": "mem_..."},
+  "match": "exact"
+}
+```
 
-Final score is the lexical relevance score after scope eligibility filtering.
+or `"match": "fts"`.
 
-When `explain=true`, signals include lexical score, scope eligibility reason, exact-match state, raw BM25 where applicable, and alias expansion where applicable.
+No numeric relevance score or explain mode exists.
 
-## 8. Scope eligibility
+## 7. Writes
 
-Known context mismatches are excluded. Applicable scope does not add a ranking bonus.
+- `put` inserts a row
+- `get` fetches by ID
+- `update` validates and replaces mutable fields
+- `delete` physically deletes the row
+- FTS is updated by triggers
 
-## 9. Multi-query
-
-`search_many`:
-
-1. runs each query
-2. unions results by memory ID
-3. keeps the best score per memory
-4. sorts once
-5. returns Top-K
-
-No model call or extra fusion bonus is used.
-
-## 10. Write semantics
-
-`put` creates a canonical row.
-
-`update` validates the resulting full memory shape and updates mutable fields.
-
-`delete` sets `deleted_at` and `updated_at`.
-
-`get(..., include_deleted=True)` can inspect a logically deleted memory by known ID.
-
-Search never returns deleted memories.
-
-## 11. Service / MCP operations
+## 8. MCP contract
 
 ```text
 memory_put
@@ -201,33 +134,16 @@ memory_get
 memory_update
 memory_delete
 memory_search
-memory_search_many
 ```
 
-Local clients and ChatGPT via Secure MCP Tunnel use the same tool surface.
+## 9. Backup and doctor
 
-## 12. Backup and doctor
+Backup uses `sqlite3.Connection.backup()`.
 
-Backups use `sqlite3.Connection.backup()`.
+Doctor checks initialization, WAL, FTS5, integrity, FTS consistency, and write readiness.
 
-`membus doctor` checks:
+## 10. Evaluation
 
-- initialization
-- WAL mode
-- FTS5 MATCH
-- SQLite integrity
-- canonical/FTS consistency
-- write transaction readiness
+Golden evaluation tracks Recall@5/10, MRR, zero-result rate, wrong-context rate, and P50/P95 latency.
 
-## 13. Evaluation
-
-The isolated Golden Retrieval Evaluation tracks:
-
-- Recall@5
-- Recall@10
-- MRR
-- zero-result rate
-- wrong-scope hit rate
-- P50/P95 latency
-
-New retrieval complexity must improve measured failures before entering the default path.
+New retrieval machinery must demonstrate measurable benefit before being added.
