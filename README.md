@@ -1,97 +1,56 @@
 # MemBus
 
-**MemBus** is a user-sovereign, tool-agnostic memory bus for AI agents.
+**MemBus** is a user-owned, tool-agnostic memory store for AI agents.
 
-Its purpose is to keep long-term knowledge and memory under the user's control, while allowing disposable clients such as Claude Code, Codex, Cursor, Kimi, Grok, and future agents to retrieve and write authorized memory through stable adapters.
+Claude Code, Codex, Cursor, ChatGPT, and other clients can share one local canonical store through MCP or CLI without making any agent vendor the system of record.
 
 ## Design principles
 
-- **User-owned canonical memory** — agent vendors are clients, not the system of record.
-- **Local-first** — the V1 canonical store is SQLite.
-- **Lexical-first retrieval** — SQLite FTS5/BM25 is the baseline; embeddings are optional derived indexes introduced only when evaluation proves they are necessary.
-- **Indexes are disposable** — FTS, vector, graph, and caches must be rebuildable from canonical data.
-- **Read and write paths are separated** — retrieval and memory formation evolve independently.
-- **Scope is a boundary, not a tag** — workspace/project/repo/branch context must prevent cross-project memory pollution.
-- **Explainable retrieval** — every returned memory should be traceable to retrieval signals and provenance.
-- **Progressive complexity** — every new subsystem must justify itself with measured retrieval or operational failures.
+- **User-owned data** — agents are clients, not memory owners.
+- **Local-first** — SQLite is the canonical store.
+- **Lexical-first** — exact matching plus FTS5/BM25 is the baseline.
+- **Context isolation** — workspace/project/repo/branch mismatches are excluded.
+- **Derived search index** — FTS can be rebuilt from canonical rows.
+- **Progressive complexity** — add new subsystems only after measured failures.
 
-## Initial V1 scope
-
-V1 intentionally stays small:
-
-- SQLite canonical store
-- compact canonical memory row with no speculative scoring/lifecycle fields
-- WAL mode and explicit transaction boundaries
-- FTS5 full-text retrieval
-- memory scope and type metadata
-- provenance metadata
-- six core memory operations:
-  - search
-  - search-many
-  - get
-  - put
-  - update
-  - delete
-- MCP adapter as an outer layer, not as the core architecture
-- no mandatory embedding model
-- no vector database
-- no autonomous memory extraction
-- no graph database
-
-## Repository layout
+## Current core
 
 ```text
-MemBus/
-├── docs/
-│   ├── requirements.md
-│   ├── architecture.md
-│   ├── v1-technical-spec.md
-│   └── open-source-review.md
-├── src/membus/
-│   ├── db.py
-│   ├── models.py
-│   ├── repository.py
-│   ├── schema.sql
-│   ├── retrieval/
-│   └── services/
-├── tests/
-├── pyproject.toml
-└── README.md
+MCP / CLI
+    │
+MemoryService
+    │
+SQLiteStore
+    │
+    ├── memories
+    ├── aliases
+    └── memory_fts
 ```
 
-## Quick start
-
-Core only:
-
-```bash
-python -m pip install -e .
-```
-
-With the MCP adapter:
-
-```bash
-python -m pip install -e '.[mcp]'
-```
-
-Run the local stdio MCP server:
-
-```bash
-membus-mcp
-```
-
-By default the canonical database is:
+The canonical memory row contains:
 
 ```text
-~/.membus/memory.db
+id
+title
+content
+memory_type
+workspace
+project
+repo
+branch
+source_type
+source_ref
+created_at
+updated_at
 ```
 
-Override it with:
+There is no explicit scope field. Context specificity is inferred from which context fields are populated.
 
-```bash
-MEMBUS_DB=/path/to/memory.db membus-mcp
-```
+There is no soft-delete state. `memory_delete` physically deletes the canonical row and the FTS trigger removes the derived index row.
 
-The current MCP v2 adapter exposes exactly six tools:
+## MCP tools
+
+The stdio MCP adapter exposes five tools:
 
 ```text
 memory_put
@@ -99,37 +58,82 @@ memory_get
 memory_update
 memory_delete
 memory_search
-memory_search_many
 ```
 
-## CLI
+Local agents and ChatGPT through Secure MCP Tunnel use the same tool surface.
 
-The core has a standard-library CLI in addition to the MCP adapter.
+## Quick start
 
 ```bash
-# initialize and verify the store
+python -m pip install -e '.[mcp]'
+
 membus --db ./memory.db doctor
 
-# explicit durable memory
 membus --db ./memory.db put \
   --title "Do not edit generated client" \
   --content "generated/client.ts is generated from OpenAPI." \
   --memory-type procedure \
-  --scope repo \
   --project payment \
   --repo payment-api
 
-# scoped lexical search with score explanation
 membus --db ./memory.db search "generated/client.ts" \
   --project payment \
-  --repo payment-api \
-  --explain
+  --repo payment-api
 
-# consistent WAL-safe backup
 membus --db ./memory.db backup ./backup.db
 ```
 
-Run the isolated golden retrieval evaluation:
+Run the MCP server:
+
+```bash
+MEMBUS_DB=./memory.db membus-mcp
+```
+
+## Retrieval
+
+```text
+query
+  ├── exact full-query substring
+  └── tokens -> aliases -> FTS5/BM25
+           │
+           ▼
+      context filter
+           │
+           ▼
+       exact first
+       then FTS
+           │
+           ▼
+          Top-K
+```
+
+Search results contain lightweight match metadata:
+
+```json
+{
+  "memory": {"id": "mem_..."},
+  "match": "exact"
+}
+```
+
+There is no synthetic numeric relevance score.
+
+## Reliability
+
+Implemented and tested:
+
+- SQLite WAL
+- busy timeout and bounded busy retry
+- `BEGIN IMMEDIATE` for application writes
+- multi-process writer stress test
+- SQLite backup API
+- FTS synchronization triggers
+- `membus doctor`
+- isolated Golden Retrieval Evaluation
+- Python 3.11 / 3.12 CI
+- MCP round-trip tests
+
+Run retrieval evaluation:
 
 ```bash
 membus eval evals/golden_v1.json \
@@ -138,62 +142,24 @@ membus eval evals/golden_v1.json \
   --max-wrong-scope-rate 0.0
 ```
 
-## Current implementation status
-
-Implemented baseline:
-
-- SQLite canonical store
-- WAL + busy timeout
-- explicit transactions and `BEGIN IMMEDIATE` for all application writes
-- consistent SQLite backup API
-- FTS5/BM25 lexical candidates
-- exact identifier/substring candidate path
-- deterministic aliases
-- workspace/project/repo/branch scope isolation
-- explainable ranking
-- logical deletion
-- multi-query candidate union with best-score selection
-- MCP v2 stdio adapter
-- GitHub Actions on Python 3.11 and 3.12
-- in-memory MCP round-trip tests
-- reproducible isolated Golden Retrieval Evaluation
-- CLI for CRUD/search/backup/evaluation
-- multi-process WAL writer stress test
-- CI quality gates for both unit tests and retrieval metrics
-- `membus doctor` application/data health checks
-- Secure MCP Tunnel stdio deployment runbook
-
-Current initial golden baseline (18 deliberately simple coding-memory queries):
-
-```text
-Recall@5              1.000
-Recall@10             1.000
-MRR                   1.000
-Wrong-scope hit rate  0.000
-Zero-result rate      0.000
-CI P95 search latency ~1.1 ms
-```
-
-These numbers are a regression baseline, not a claim about real-world retrieval
-quality. The dataset is expected to become harder as real misses are added.
-
 Still deliberately absent:
 
+- schema migration compatibility
+- mutation history
+- runtime retrieval logging
+- soft-delete/restore
 - embeddings/vector database
-- LLM query rewrite/reranking
-- automatic memory extraction
-- autonomous consolidation
 - graph database
+- LLM query rewriting/reranking
+- automatic memory extraction/consolidation
+- ACL/multi-user tenancy
 - distributed storage
-
-These will only be introduced against measured retrieval or operational failures.
 
 See:
 
 - [Requirements](docs/requirements.md)
 - [Architecture](docs/architecture.md)
 - [V1 technical specification](docs/v1-technical-spec.md)
-- [Open-source design review](docs/open-source-review.md)
 - [Retrieval evaluation](docs/evaluation.md)
 - [ChatGPT Secure MCP Tunnel integration](docs/chatgpt-secure-tunnel.md)
 - [Secure MCP Tunnel deployment runbook](docs/secure-tunnel-deployment.md)
