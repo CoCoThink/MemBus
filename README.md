@@ -107,8 +107,8 @@ memory_search_many
 The core has a standard-library CLI in addition to the MCP adapter.
 
 ```bash
-# initialize / verify a store
-membus --db ./memory.db init
+# initialize and verify the store
+membus --db ./memory.db doctor
 
 # explicit durable memory
 membus --db ./memory.db put \
@@ -124,9 +124,6 @@ membus --db ./memory.db search "generated/client.ts" \
   --project payment \
   --repo payment-api \
   --explain
-
-# application/data health
-membus --db ./memory.db doctor
 
 # consistent WAL-safe backup
 membus --db ./memory.db backup ./backup.db
@@ -174,7 +171,7 @@ Recall@10             1.000
 MRR                   1.000
 Wrong-scope hit rate  0.000
 Zero-result rate      0.000
-CI P95 search latency ~1.4 ms
+CI P95 search latency ~1.1 ms
 ```
 
 These numbers are a regression baseline, not a claim about real-world retrieval
