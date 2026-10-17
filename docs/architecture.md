@@ -109,7 +109,7 @@ Rules:
 - adapters never issue SQL
 - service layer does not know FTS implementation details
 - mutations use explicit transactions
-- read-modify-write flows may use `BEGIN IMMEDIATE`
+- application writes default to `BEGIN IMMEDIATE`; read-only operations do not open write transactions
 
 ### 3.3 Retrieval engine
 
