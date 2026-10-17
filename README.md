@@ -204,3 +204,4 @@ See:
 - [V1 technical specification](docs/v1-technical-spec.md)
 - [Open-source design review](docs/open-source-review.md)
 - [Retrieval evaluation](docs/evaluation.md)
+- [ChatGPT Secure MCP Tunnel integration](docs/chatgpt-secure-tunnel.md)
