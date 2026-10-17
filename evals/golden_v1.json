@@ -2,10 +2,22 @@
   "version": 1,
   "description": "Initial lexical-first retrieval baseline for MemBus V1.",
   "aliases": [
-    {"alias": "pg", "canonical": "postgresql"},
-    {"alias": "prod", "canonical": "production"},
-    {"alias": "cc", "canonical": "claude code"},
-    {"alias": "k8s", "canonical": "kubernetes"}
+    {
+      "alias": "pg",
+      "canonical": "postgresql"
+    },
+    {
+      "alias": "prod",
+      "canonical": "production"
+    },
+    {
+      "alias": "cc",
+      "canonical": "claude code"
+    },
+    {
+      "alias": "k8s",
+      "canonical": "kubernetes"
+    }
   ],
   "memories": [
     {
@@ -14,9 +26,7 @@
         "title": "Python package manager preference",
         "content": "Python projects should prefer uv for package and dependency management instead of Poetry.",
         "memory_type": "preference",
-        "scope": "global",
-        "importance": 0.8,
-        "trust": 1.0
+        "scope": "global"
       }
     },
     {
@@ -28,9 +38,7 @@
         "scope": "repo",
         "workspace": "work",
         "project": "payment",
-        "repo": "payment-api",
-        "importance": 0.9,
-        "trust": 1.0
+        "repo": "payment-api"
       }
     },
     {
@@ -41,8 +49,7 @@
         "memory_type": "incident",
         "scope": "project",
         "workspace": "work",
-        "project": "payment",
-        "importance": 0.9
+        "project": "payment"
       }
     },
     {
@@ -53,9 +60,7 @@
         "memory_type": "decision",
         "scope": "project",
         "workspace": "work",
-        "project": "payment",
-        "importance": 0.95,
-        "trust": 0.95
+        "project": "payment"
       }
     },
     {
@@ -66,8 +71,7 @@
         "memory_type": "incident",
         "scope": "project",
         "workspace": "work",
-        "project": "payment",
-        "importance": 0.9
+        "project": "payment"
       }
     },
     {
@@ -90,8 +94,7 @@
         "memory_type": "fact",
         "scope": "project",
         "workspace": "work",
-        "project": "payment",
-        "trust": 0.9
+        "project": "payment"
       }
     },
     {
@@ -102,8 +105,7 @@
         "memory_type": "fact",
         "scope": "project",
         "workspace": "work",
-        "project": "analytics",
-        "trust": 0.9
+        "project": "analytics"
       }
     },
     {
@@ -123,9 +125,7 @@
         "title": "Claude Code memory rule",
         "content": "Claude Code must use MemBus rather than a vendor-owned private memory as the long-term system of record.",
         "memory_type": "decision",
-        "scope": "global",
-        "importance": 1.0,
-        "trust": 1.0
+        "scope": "global"
       }
     },
     {
@@ -166,114 +166,208 @@
     {
       "name": "exact issue id",
       "query": "BUG-18472",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["bug_18472"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "bug_18472"
+      ]
     },
     {
       "name": "exact code symbol",
       "query": "reconcilePayment",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["bug_18472"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "bug_18472"
+      ]
     },
     {
       "name": "exact generated path",
       "query": "generated/client.ts",
-      "context": {"workspace": "work", "project": "payment", "repo": "payment-api"},
-      "expected": ["generated_client"]
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "expected": [
+        "generated_client"
+      ]
     },
     {
       "name": "package manager",
       "query": "Python package manager",
       "context": {},
-      "expected": ["python_uv"]
+      "expected": [
+        "python_uv"
+      ]
     },
     {
       "name": "uv preference",
       "query": "uv Poetry",
       "context": {},
-      "expected": ["python_uv"]
+      "expected": [
+        "python_uv"
+      ]
     },
     {
       "name": "settlement concurrency",
       "query": "settlement concurrent provider idempotency",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["settlement_idempotency"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "settlement_idempotency"
+      ]
     },
     {
       "name": "connection pool",
       "query": "PostgreSQL connection pool worker concurrency",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["payment_pool_incident"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "payment_pool_incident"
+      ]
     },
     {
       "name": "pg alias",
       "query": "pg connection pool",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["payment_pool_incident"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "payment_pool_incident"
+      ]
     },
     {
       "name": "production deploy",
       "query": "production deployment websocket smoke test",
-      "context": {"workspace": "work", "project": "payment", "repo": "payment-api"},
-      "expected": ["payment_deploy"]
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "expected": [
+        "payment_deploy"
+      ]
     },
     {
       "name": "prod alias",
       "query": "prod deployment migrations",
-      "context": {"workspace": "work", "project": "payment", "repo": "payment-api"},
-      "expected": ["payment_deploy"]
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "expected": [
+        "payment_deploy"
+      ]
     },
     {
       "name": "payment database version",
       "query": "PostgreSQL version production database",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["payment_pg17"],
-      "forbidden": ["analytics_pg15", "personal_payment_sqlite"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "payment_pg17"
+      ],
+      "forbidden": [
+        "analytics_pg15",
+        "personal_payment_sqlite"
+      ]
     },
     {
       "name": "analytics database version",
       "query": "PostgreSQL version production database",
-      "context": {"workspace": "work", "project": "analytics"},
-      "expected": ["analytics_pg15"],
-      "forbidden": ["payment_pg17"]
+      "context": {
+        "workspace": "work",
+        "project": "analytics"
+      },
+      "expected": [
+        "analytics_pg15"
+      ],
+      "forbidden": [
+        "payment_pg17"
+      ]
     },
     {
       "name": "same project different workspace",
       "query": "payment project database",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["payment_pg17"],
-      "forbidden": ["personal_payment_sqlite"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "payment_pg17"
+      ],
+      "forbidden": [
+        "personal_payment_sqlite"
+      ]
     },
     {
       "name": "cc alias",
       "query": "cc memory rule",
       "context": {},
-      "expected": ["claude_code_rule"]
+      "expected": [
+        "claude_code_rule"
+      ]
     },
     {
       "name": "k8s alias",
       "query": "why no k8s",
-      "context": {"workspace": "work", "project": "payment"},
-      "expected": ["no_kubernetes"]
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "no_kubernetes"
+      ]
     },
     {
       "name": "websocket reset",
       "query": "websocket connection resets proxy",
-      "context": {"workspace": "work", "project": "payment", "repo": "payment-api"},
-      "expected": ["websocket_failure"]
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "expected": [
+        "websocket_failure"
+      ]
     },
     {
       "name": "redis procedure",
       "query": "Redis production cache namespace",
-      "context": {"workspace": "work"},
-      "expected": ["redis_runbook"]
+      "context": {
+        "workspace": "work"
+      },
+      "expected": [
+        "redis_runbook"
+      ]
     },
     {
       "name": "deployment type filter",
       "query": "production deployment",
-      "context": {"workspace": "work", "project": "payment", "repo": "payment-api"},
-      "types": ["procedure"],
-      "expected": ["payment_deploy"]
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "types": [
+        "procedure"
+      ],
+      "expected": [
+        "payment_deploy"
+      ]
     }
   ]
 }
