@@ -1,7 +1,8 @@
 """Domain models for MemBus.
 
-These models intentionally do not depend on MCP, an ORM, an embedding library,
-or any other adapter/retrieval implementation.
+The core models intentionally contain only metadata with current runtime
+semantics. Future lifecycle or scoring fields are added only when a measured
+need justifies them.
 """
 
 from __future__ import annotations
@@ -55,14 +56,8 @@ class MemoryCreate:
     project: str | None = None
     repo: str | None = None
     branch: str | None = None
-    importance: float = 0.5
-    confidence: float = 1.0
-    trust: float = 0.5
     source_type: str | None = None
     source_ref: str | None = None
-    valid_from: str | None = None
-    valid_until: str | None = None
-    supersedes_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,15 +71,8 @@ class Memory:
     project: str | None
     repo: str | None
     branch: str | None
-    status: str
-    importance: float
-    confidence: float
-    trust: float
     source_type: str | None
     source_ref: str | None
-    valid_from: str | None
-    valid_until: str | None
-    supersedes_id: str | None
     created_at: str
     updated_at: str
     deleted_at: str | None
