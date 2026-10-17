@@ -15,7 +15,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
-from .db import Database
+from .store import SQLiteStore
 from .models import MemoryCreate, SearchContext, SearchRequest
 from .services.memory_service import MemoryService
 
@@ -41,7 +41,7 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
     payload = json.loads(dataset_path.read_text(encoding="utf-8"))
 
     with tempfile.TemporaryDirectory(prefix="membus-eval-") as temp_dir:
-        service = MemoryService(Database(Path(temp_dir) / "eval.db"))
+        service = MemoryService(SQLiteStore(Path(temp_dir) / "eval.db"))
         key_to_id = _seed(service, payload)
 
         recalls_5: list[float] = []
@@ -63,10 +63,10 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
 
             started = time.perf_counter()
             results = service.search(
-                SearchRequest.with_types(
+                SearchRequest(
                     query=str(case["query"]),
                     context=context,
-                    types=case.get("types", ()),
+                    types=tuple(case.get("types", ())),
                     limit=10,
                 )
             )
