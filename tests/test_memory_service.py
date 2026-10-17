@@ -4,13 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from membus import Database, MemoryCreate, MemoryService, SearchContext, SearchRequest
-from membus.models import SearchManyRequest
+from membus import MemoryCreate, MemoryService, SearchContext, SearchRequest, SQLiteStore
 
 
 @pytest.fixture
 def service(tmp_path: Path) -> MemoryService:
-    return MemoryService(Database(tmp_path / "memory.db"))
+    return MemoryService(SQLiteStore(tmp_path / "memory.db"))
 
 
 def test_crud(service: MemoryService) -> None:
@@ -19,7 +18,6 @@ def test_crud(service: MemoryService) -> None:
             title="Generated client rule",
             content="generated/client.ts is generated from OpenAPI and must not be edited.",
             memory_type="procedure",
-            scope="repo",
             project="payment",
             repo="payment-api",
             source_type="user_rule",
@@ -38,30 +36,23 @@ def test_crud(service: MemoryService) -> None:
 
     assert service.delete(memory.id) is True
     assert service.get(memory.id) is None
-
-    deleted = service.get(memory.id, include_deleted=True)
-    assert deleted is not None
-    assert deleted.deleted_at is not None
-
     assert service.delete(memory.id) is False
 
 
-def test_project_scope_mismatch_is_excluded(service: MemoryService) -> None:
+def test_context_mismatch_is_excluded(service: MemoryService) -> None:
     wrong = service.put(
         MemoryCreate(
-            title="Database version",
-            content="PostgreSQL version for the analytics project is 15.",
+            content="PostgreSQL version for analytics is 15.",
             memory_type="fact",
-            scope="project",
+            workspace="work",
             project="analytics",
         )
     )
     right = service.put(
         MemoryCreate(
-            title="Database version",
-            content="PostgreSQL version for the payment project is 17.",
+            content="PostgreSQL version for payment is 17.",
             memory_type="fact",
-            scope="project",
+            workspace="work",
             project="payment",
         )
     )
@@ -69,24 +60,21 @@ def test_project_scope_mismatch_is_excluded(service: MemoryService) -> None:
     results = service.search(
         SearchRequest(
             query="PostgreSQL version",
-            context=SearchContext(project="payment"),
-            explain=True,
+            context=SearchContext(workspace="work", project="payment"),
         )
     )
 
     ids = [result.memory.id for result in results]
     assert right.id in ids
     assert wrong.id not in ids
-    assert results[0].signals["scope_reason"] == "project applicable"
 
 
-def test_exact_technical_identifier_is_retrievable(service: MemoryService) -> None:
+def test_exact_identifier_is_first_class(service: MemoryService) -> None:
     memory = service.put(
         MemoryCreate(
             title="BUG-18472",
             content="BUG-18472 was caused by reconcilePayment retrying after a partial settlement.",
             memory_type="incident",
-            scope="project",
             project="payment",
         )
     )
@@ -95,23 +83,18 @@ def test_exact_technical_identifier_is_retrievable(service: MemoryService) -> No
         SearchRequest(
             query="BUG-18472",
             context=SearchContext(project="payment"),
-            explain=True,
         )
     )
 
-    assert results
     assert results[0].memory.id == memory.id
-    assert results[0].signals["exact_match"] is True
-    assert results[0].signals["lexical"] == 1.0
+    assert results[0].match == "exact"
 
 
-def test_alias_expansion_recovers_lexical_match(service: MemoryService) -> None:
+def test_alias_expansion_recovers_fts_match(service: MemoryService) -> None:
     memory = service.put(
         MemoryCreate(
-            title="Database incident",
             content="PostgreSQL connection pool was exhausted by worker concurrency.",
             memory_type="incident",
-            scope="project",
             project="payment",
         )
     )
@@ -121,123 +104,65 @@ def test_alias_expansion_recovers_lexical_match(service: MemoryService) -> None:
         SearchRequest(
             query="pg",
             context=SearchContext(project="payment"),
-            explain=True,
         )
     )
 
-    assert results
     assert results[0].memory.id == memory.id
-    assert "postgresql" in results[0].signals["alias_expansion"]["pg"]
+    assert results[0].match == "fts"
 
 
-def test_logical_delete_is_excluded_from_search(service: MemoryService) -> None:
+def test_delete_removes_memory_and_fts_row(service: MemoryService) -> None:
     memory = service.put(
         MemoryCreate(
-            title="Temporary incident",
-            content="connection pool incident temporary-marker",
-            memory_type="incident",
-            scope="global",
+            content="temporary-marker",
+            memory_type="note",
         )
     )
-    assert service.search(SearchRequest(query="temporary-marker"))
 
-    service.delete(memory.id)
-
+    assert service.delete(memory.id) is True
     assert service.search(SearchRequest(query="temporary-marker")) == []
 
-
-def test_multi_query_unions_candidates(service: MemoryService) -> None:
-    primary = service.put(
-        MemoryCreate(
-            title="Settlement concurrency",
-            content=(
-                "Settlement concurrency can exhaust the PostgreSQL connection pool "
-                "when worker concurrency is increased."
-            ),
-            memory_type="incident",
-            scope="project",
-            project="payment",
-        )
-    )
-    service.put(
-        MemoryCreate(
-            title="Unrelated PostgreSQL note",
-            content="PostgreSQL backups run every night.",
-            memory_type="note",
-            scope="project",
-            project="payment",
-        )
-    )
-
-    results = service.search_many(
-        SearchManyRequest.from_queries(
-            ["settlement concurrency", "connection pool", "worker concurrency"],
-            context=SearchContext(project="payment"),
-            limit=5,
-            explain=True,
-        )
-    )
-
-    assert results
-    assert results[0].memory.id == primary.id
+    with service.store.connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memory_fts WHERE memory_id = ?",
+            (memory.id,),
+        ).fetchone()[0] == 0
 
 
 def test_backup_restores_canonical_data(tmp_path: Path) -> None:
-    source_path = tmp_path / "source.db"
-    backup_path = tmp_path / "backup.db"
-
-    service = MemoryService(Database(source_path))
+    source = SQLiteStore(tmp_path / "source.db")
+    service = MemoryService(source)
     memory = service.put(
         MemoryCreate(
-            title="Backup test",
             content="This memory must survive a SQLite backup.",
             memory_type="fact",
-            scope="global",
         )
     )
 
-    service.db.backup(backup_path)
+    source.backup(tmp_path / "backup.db")
 
-    restored = MemoryService(Database(backup_path))
-    loaded = restored.get(memory.id)
-
-    assert loaded is not None
-    assert loaded.content == "This memory must survive a SQLite backup."
+    restored = MemoryService(SQLiteStore(tmp_path / "backup.db"))
+    assert restored.get(memory.id) is not None
 
 
-@pytest.mark.parametrize(
-    ("scope", "kwargs"),
-    [
-        ("workspace", {}),
-        ("project", {}),
-        ("repo", {}),
-        ("branch", {"repo": "payment-api"}),
-    ],
-)
-def test_invalid_scope_is_rejected(
-    service: MemoryService,
-    scope: str,
-    kwargs: dict[str, str],
-) -> None:
-    with pytest.raises(ValueError):
+def test_branch_requires_repo(service: MemoryService) -> None:
+    with pytest.raises(ValueError, match="branch requires repo"):
         service.put(
             MemoryCreate(
-                content="invalid scope example",
+                content="invalid branch context",
                 memory_type="fact",
-                scope=scope,
-                **kwargs,
+                branch="main",
             )
         )
 
 
-def test_parent_workspace_mismatch_excludes_same_named_project(
+def test_same_project_different_workspace_is_excluded(
     service: MemoryService,
 ) -> None:
     wrong = service.put(
         MemoryCreate(
             content="Payment project in personal workspace uses SQLite.",
             memory_type="fact",
-            scope="project",
             workspace="personal",
             project="payment",
         )
@@ -246,7 +171,6 @@ def test_parent_workspace_mismatch_excludes_same_named_project(
         MemoryCreate(
             content="Payment project in work workspace uses PostgreSQL.",
             memory_type="fact",
-            scope="project",
             workspace="work",
             project="payment",
         )
@@ -264,17 +188,6 @@ def test_parent_workspace_mismatch_excludes_same_named_project(
     assert wrong.id not in ids
 
 
-def test_search_many_accepts_public_maximum_limit(service: MemoryService) -> None:
-    service.put(
-        MemoryCreate(
-            content="PostgreSQL connection pool",
-            memory_type="fact",
-            scope="global",
-        )
-    )
-
-    results = service.search_many(
-        SearchManyRequest.from_queries(["PostgreSQL"], limit=100)
-    )
-
-    assert len(results) == 1
+def test_search_accepts_public_maximum_limit(service: MemoryService) -> None:
+    service.put(MemoryCreate(content="PostgreSQL connection pool", memory_type="fact"))
+    assert len(service.search(SearchRequest(query="PostgreSQL", limit=100))) == 1
