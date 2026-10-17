@@ -22,7 +22,6 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
         "--content", "BUG-9001 is caused by payment retry logic.",
         "--title", "BUG-9001",
         "--memory-type", "incident",
-        "--scope", "project",
         "--project", "payment",
     ]) == 0
     created = _json_output(capsys)
@@ -33,7 +32,6 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
         "search",
         "BUG-9001",
         "--project", "payment",
-        "--explain",
     ]) == 0
     searched = _json_output(capsys)
     assert searched["results"][0]["memory"]["id"] == memory_id
