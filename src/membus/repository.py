@@ -25,15 +25,8 @@ _MEMORY_COLUMNS = (
     "project",
     "repo",
     "branch",
-    "status",
-    "importance",
-    "confidence",
-    "trust",
     "source_type",
     "source_ref",
-    "valid_from",
-    "valid_until",
-    "supersedes_id",
     "created_at",
     "updated_at",
     "deleted_at",
@@ -50,17 +43,13 @@ class MemoryRepository:
                 """
                 INSERT INTO memories (
                     id, title, content, memory_type, scope,
-                    workspace, project, repo, branch, status,
-                    importance, confidence, trust,
+                    workspace, project, repo, branch,
                     source_type, source_ref,
-                    valid_from, valid_until, supersedes_id,
                     created_at, updated_at, deleted_at
                 ) VALUES (
                     :id, :title, :content, :memory_type, :scope,
-                    :workspace, :project, :repo, :branch, :status,
-                    :importance, :confidence, :trust,
+                    :workspace, :project, :repo, :branch,
                     :source_type, :source_ref,
-                    :valid_from, :valid_until, :supersedes_id,
                     :created_at, :updated_at, :deleted_at
                 )
                 """,
@@ -70,7 +59,7 @@ class MemoryRepository:
                 conn,
                 memory_id=memory.id,
                 event_type="created",
-                payload={"status": memory.status},
+                payload=None,
                 actor=actor,
                 created_at=memory.created_at,
             )
@@ -79,7 +68,7 @@ class MemoryRepository:
         sql = "SELECT * FROM memories WHERE id = ?"
         params: list[Any] = [memory_id]
         if not include_deleted:
-            sql += " AND status = 'active'"
+            sql += " AND deleted_at IS NULL"
 
         with self.db.connection() as conn:
             row = conn.execute(sql, params).fetchone()
@@ -92,9 +81,9 @@ class MemoryRepository:
         changed_fields: Mapping[str, Any],
         actor: str | None = None,
     ) -> Memory:
-        with self.db.transaction(immediate=True) as conn:
+        with self.db.transaction() as conn:
             current = conn.execute(
-                "SELECT * FROM memories WHERE id = ?",
+                "SELECT id FROM memories WHERE id = ?",
                 (memory.id,),
             ).fetchone()
             if current is None:
@@ -112,15 +101,8 @@ class MemoryRepository:
                     project = :project,
                     repo = :repo,
                     branch = :branch,
-                    status = :status,
-                    importance = :importance,
-                    confidence = :confidence,
-                    trust = :trust,
                     source_type = :source_type,
                     source_ref = :source_ref,
-                    valid_from = :valid_from,
-                    valid_until = :valid_until,
-                    supersedes_id = :supersedes_id,
                     updated_at = :updated_at,
                     deleted_at = :deleted_at
                 WHERE id = :id
@@ -145,21 +127,18 @@ class MemoryRepository:
         deleted_at: str,
         actor: str | None = None,
     ) -> bool:
-        with self.db.transaction(immediate=True) as conn:
+        with self.db.transaction() as conn:
             current = conn.execute(
-                "SELECT status FROM memories WHERE id = ?",
+                "SELECT deleted_at FROM memories WHERE id = ?",
                 (memory_id,),
             ).fetchone()
-            if current is None:
-                return False
-            if current["status"] == "deleted":
+            if current is None or current["deleted_at"] is not None:
                 return False
 
             conn.execute(
                 """
                 UPDATE memories
-                SET status = 'deleted',
-                    deleted_at = ?,
+                SET deleted_at = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -169,7 +148,7 @@ class MemoryRepository:
                 conn,
                 memory_id=memory_id,
                 event_type="deleted",
-                payload={"status": "deleted"},
+                payload=None,
                 actor=actor,
                 created_at=deleted_at,
             )
@@ -194,7 +173,7 @@ class MemoryRepository:
         params: list[Any] = [query, query]
 
         if not include_deleted:
-            where.append("m.status = 'active'")
+            where.append("m.deleted_at IS NULL")
         _append_type_filter(where, params, types)
 
         sql = f"""
@@ -222,7 +201,7 @@ class MemoryRepository:
         params: list[Any] = [match_query]
 
         if not include_deleted:
-            where.append("m.status = 'active'")
+            where.append("m.deleted_at IS NULL")
         _append_type_filter(where, params, types)
 
         sql = f"""
@@ -241,7 +220,9 @@ class MemoryRepository:
             try:
                 rows = conn.execute(sql, params).fetchall()
             except sqlite3.OperationalError as exc:
-                raise ValueError(f"Invalid FTS query generated by MemBus: {match_query!r}") from exc
+                raise ValueError(
+                    f"Invalid FTS query generated by MemBus: {match_query!r}"
+                ) from exc
 
         return [(_memory_from_row(row), float(row["raw_bm25"])) for row in rows]
 
@@ -291,7 +272,6 @@ class MemoryRepository:
         candidate_count: int,
         result_ids: list[str],
         latency_ms: float,
-        debug: Mapping[str, Any] | None,
         created_at: str,
     ) -> None:
         with self.db.transaction() as conn:
@@ -299,8 +279,8 @@ class MemoryRepository:
                 """
                 INSERT INTO retrieval_logs(
                     query, scope_json, candidate_count,
-                    result_ids_json, latency_ms, debug_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    result_ids_json, latency_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     query,
@@ -308,9 +288,6 @@ class MemoryRepository:
                     candidate_count,
                     json.dumps(result_ids),
                     latency_ms,
-                    json.dumps(debug, ensure_ascii=False, sort_keys=True)
-                    if debug is not None
-                    else None,
                     created_at,
                 ),
             )
