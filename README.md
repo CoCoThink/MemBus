@@ -20,12 +20,11 @@ Its purpose is to keep long-term knowledge and memory under the user's control, 
 V1 intentionally stays small:
 
 - SQLite canonical store
-- compact 14-field canonical memory row with no speculative scoring/lifecycle fields
+- compact canonical memory row with no speculative scoring/lifecycle fields
 - WAL mode and explicit transaction boundaries
 - FTS5 full-text retrieval
 - memory scope and type metadata
-- provenance and event ledger
-- retrieval logging
+- provenance metadata
 - six core memory operations:
   - search
   - search-many
@@ -92,14 +91,6 @@ Override it with:
 MEMBUS_DB=/path/to/memory.db membus-mcp
 ```
 
-Retrieval logging is off by default so reads do not become writes. For development/auditing:
-
-```bash
-MEMBUS_RETRIEVAL_LOG_MODE=metadata-only membus-mcp
-# or
-MEMBUS_RETRIEVAL_LOG_MODE=full membus-mcp
-```
-
 The current MCP v2 adapter exposes exactly six tools:
 
 ```text
@@ -163,14 +154,11 @@ Implemented baseline:
 - deterministic aliases
 - workspace/project/repo/branch scope isolation
 - explainable ranking
-- mutation event ledger
-- optional retrieval logs
 - logical deletion
 - multi-query candidate union with best-score selection
 - MCP v2 stdio adapter
 - GitHub Actions on Python 3.11 and 3.12
 - in-memory MCP round-trip tests
-- schema migration framework (current schema v2, including tested v1 -> v2 contraction)
 - reproducible isolated Golden Retrieval Evaluation
 - CLI for CRUD/search/backup/evaluation
 - multi-process WAL writer stress test
