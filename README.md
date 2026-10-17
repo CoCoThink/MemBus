@@ -1,33 +1,25 @@
 # MemBus
 
-**MemBus** is a user-owned, tool-agnostic memory store for AI agents.
+**MemBus** is a user-owned local memory store for AI agents.
 
-Claude Code, Codex, Cursor, ChatGPT, and other clients can share one local canonical store through MCP or CLI without making any agent vendor the system of record.
+Claude Code, Codex, Cursor, ChatGPT, and other MCP clients can share one SQLite store without making any agent vendor the system of record.
 
-## Design principles
-
-- **User-owned data** — agents are clients, not memory owners.
-- **Local-first** — SQLite is the canonical store.
-- **Lexical-first** — exact matching plus FTS5/BM25 is the baseline.
-- **Context isolation** — workspace/project/repo/branch mismatches are excluded.
-- **Derived search index** — FTS can be rebuilt from canonical rows.
-- **Progressive complexity** — add new subsystems only after measured failures.
-
-## Current core
+## Core
 
 ```text
 MCP / CLI
     │
-MemoryService
+    ▼
+  MemBus
     │
-SQLiteStore
-    │
-    ├── memories
-    ├── aliases
-    └── memory_fts
+    ▼
+ SQLite
+ ├─ memories
+ ├─ aliases
+ └─ FTS5
 ```
 
-The canonical memory row contains:
+Canonical memory has eight fields:
 
 ```text
 id
@@ -38,19 +30,30 @@ workspace
 project
 repo
 branch
-source_type
-source_ref
-created_at
-updated_at
 ```
 
-There is no explicit scope field. Context specificity is inferred from which context fields are populated.
+There is no explicit scope field, lifecycle metadata, provenance metadata, synthetic relevance score, or soft-delete state.
 
-There is no soft-delete state. `memory_delete` physically deletes the canonical row and the FTS trigger removes the derived index row.
+## Retrieval
+
+```text
+query
+  ├─ exact full-query substring
+  └─ tokens -> aliases -> FTS5/BM25
+          │
+          ▼
+      context filter
+          │
+          ▼
+ exact first, then FTS
+          │
+          ▼
+        Top-K
+```
+
+Workspace/project/repo/branch mismatches are excluded when both the stored memory and query provide that context dimension.
 
 ## MCP tools
-
-The stdio MCP adapter exposes five tools:
 
 ```text
 memory_put
@@ -60,7 +63,7 @@ memory_delete
 memory_search
 ```
 
-Local agents and ChatGPT through Secure MCP Tunnel use the same tool surface.
+Local agents and ChatGPT through Secure MCP Tunnel use the same five tools.
 
 ## Quick start
 
@@ -83,74 +86,45 @@ membus --db ./memory.db search "generated/client.ts" \
 membus --db ./memory.db backup ./backup.db
 ```
 
-Run the MCP server:
+Run MCP:
 
 ```bash
 MEMBUS_DB=./memory.db membus-mcp
 ```
 
-## Retrieval
-
-```text
-query
-  ├── exact full-query substring
-  └── tokens -> aliases -> FTS5/BM25
-           │
-           ▼
-      context filter
-           │
-           ▼
-       exact first
-       then FTS
-           │
-           ▼
-          Top-K
-```
-
-Search results contain lightweight match metadata:
-
-```json
-{
-  "memory": {"id": "mem_..."},
-  "match": "exact"
-}
-```
-
-There is no synthetic numeric relevance score.
-
 ## Reliability
 
-Implemented and tested:
+The small core still keeps the engineering controls that have demonstrated value:
 
 - SQLite WAL
 - busy timeout and bounded busy retry
-- `BEGIN IMMEDIATE` for application writes
-- multi-process writer stress test
-- SQLite backup API
+- `BEGIN IMMEDIATE` for writes
+- multi-process writer stress coverage
 - FTS synchronization triggers
+- SQLite backup API
 - `membus doctor`
-- isolated Golden Retrieval Evaluation
 - Python 3.11 / 3.12 CI
 - MCP round-trip tests
+- isolated Golden Retrieval Evaluation
 
-Run retrieval evaluation:
+Run the repository evaluation tool:
 
 ```bash
-membus eval evals/golden_v1.json \
+python tools/evaluate.py evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
   --max-wrong-context-rate 0.0
 ```
 
-Still deliberately absent:
+Deliberately absent until real failures justify them:
 
-- schema migration compatibility
-- mutation history
+- schema compatibility migrations
+- history/soft delete
 - runtime retrieval logging
-- soft-delete/restore
-- embeddings/vector database
-- graph database
-- LLM query rewriting/reranking
+- batch/search-many API
+- embeddings/vector DB
+- graph DB
+- LLM query rewrite/rerank
 - automatic memory extraction/consolidation
 - ACL/multi-user tenancy
 - distributed storage
