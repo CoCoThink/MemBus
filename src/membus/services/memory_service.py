@@ -22,10 +22,10 @@ from ..retrieval.lexical import (
     build_fts_or_query,
     expand_tokens,
     extract_tokens,
+    lexical_score_from_rank,
     normalize_text,
 )
-from ..retrieval.ranking import final_score, lexical_score_from_rank
-from ..retrieval.scope import scope_affinity, validate_scope
+from ..retrieval.scope import scope_eligibility, validate_scope
 
 
 _MUTABLE_FIELDS = {
@@ -163,8 +163,7 @@ class MemoryService:
 
         return sorted(
             merged.values(),
-            key=lambda result: (result.score, result.memory.updated_at),
-            reverse=True,
+            key=lambda result: (-result.score, result.memory.id),
         )[: request.limit]
 
     def _search_core(
@@ -225,7 +224,7 @@ class MemoryService:
         ranked: list[SearchResult] = []
         for item in candidates.values():
             memory: Memory = item["memory"]
-            scope = scope_affinity(memory, request.context)
+            scope = scope_eligibility(memory, request.context)
             if not scope.eligible:
                 continue
 
@@ -238,12 +237,12 @@ class MemoryService:
                     continue
                 lexical = lexical_score_from_rank(int(fts_rank))
 
-            score, signals = final_score(
-                lexical=lexical,
-                scope=scope.score,
-                exact_match=exact_match,
-            )
-            signals["scope_reason"] = scope.reason
+            score = lexical
+            signals: dict[str, Any] = {
+                "lexical": lexical,
+                "exact_match": exact_match,
+                "scope_reason": scope.reason,
+            }
             if "raw_bm25" in item:
                 signals["raw_bm25"] = item["raw_bm25"]
             if aliases:
@@ -261,10 +260,7 @@ class MemoryService:
                 )
             )
 
-        ranked.sort(
-            key=lambda result: (result.score, result.memory.updated_at),
-            reverse=True,
-        )
+        ranked.sort(key=lambda result: (-result.score, result.memory.id))
         return ranked[: request.limit]
 
     @staticmethod
