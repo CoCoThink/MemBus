@@ -1,112 +1,67 @@
 # Retrieval Evaluation
 
-MemBus treats retrieval quality as an engineering metric, not a subjective impression. Any proposal to add query rewriting, a reranker, embeddings, a graph index, or another retrieval subsystem should be evaluated against a versioned golden dataset.
+Retrieval quality is treated as an engineering metric. The evaluator is repository tooling, not part of the MemBus runtime API.
 
-## Current baseline
+## Dataset
 
-The initial dataset is `evals/golden_v1.json`.
+The baseline dataset is:
 
-It covers representative coding-memory behavior:
+```text
+evals/golden_v1.json
+```
+
+It covers:
 
 - exact issue IDs
 - code symbols
 - file paths
-- package/tool preferences
-- aliases such as `pg -> postgresql`
-- project and workspace isolation
-- repository procedures
+- tool preferences
+- deterministic aliases
+- workspace/project/repo isolation
 - type filtering
-- infrastructure incidents
+- incidents/procedures
 
-The dataset is intentionally small at first. It should grow from real retrieval failures rather than synthetic feature checklists.
+It should grow from real retrieval failures.
 
 ## Isolation
 
-Evaluation always creates a temporary SQLite database, seeds the fixture memories and aliases, runs the queries, then removes the database. It never evaluates by writing into the user's canonical MemBus store.
+`tools/evaluate.py` creates a temporary MemBus database, seeds fixture memories and aliases, runs queries, then removes the database. It never writes to the user's store.
 
 ## Metrics
 
-### Recall@5 / Recall@10
+- **Recall@5 / Recall@10** — expected memories retrieved in Top-K.
+- **MRR** — rank of the first expected memory.
+- **Zero-result rate** — queries returning nothing.
+- **Wrong-context hit rate** — forbidden cross-context memories appearing in Top-10.
+- **Latency P50 / P95** — in-process `MemBus.search` regression indicators.
 
-For each query, recall is the fraction of explicitly expected memories retrieved in Top-K. This is the primary signal for deciding whether recall needs a more complex retriever.
-
-### MRR
-
-Mean Reciprocal Rank measures how early the first expected memory appears: rank #1 = 1.0, rank #2 = 0.5, rank #5 = 0.2, missing = 0.
-
-### Zero-result rate
-
-The fraction of golden queries returning no result.
-
-### Wrong-context hit rate
-
-Golden cases can name `forbidden` memories. This detects scope leakage—for example, a query in `workspace=work / project=payment` must not return the same-named project from `workspace=personal`.
-
-### Latency P50 / P95
-
-Measured around the in-process service search call in the isolated evaluator. These are regression indicators rather than cross-machine benchmark claims.
-
-## Run locally
-
-Install development dependencies:
+## Run
 
 ```bash
 python -m pip install -e '.[dev]'
+
+python tools/evaluate.py evals/golden_v1.json
 ```
 
-Run the report:
+Apply CI-style gates:
 
 ```bash
-membus eval evals/golden_v1.json
-```
-
-Apply quality gates:
-
-```bash
-membus eval evals/golden_v1.json \
+python tools/evaluate.py evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
   --max-wrong-context-rate 0.0
 ```
 
-A threshold failure exits with status code 2.
+A failed threshold exits with status 2.
 
-## CI policy
-
-CI runs both `pytest` and a separate golden retrieval gate. The golden command is intentionally visible as its own CI step so metric changes can be inspected independently from unit tests.
-
-## How to add a regression case
+## Regression policy
 
 When a real query fails:
 
-1. Reduce it to the smallest representative memory/query pair.
-2. Add the memory to `memories` with a stable fixture `key`.
-3. Add the query to `queries`.
-4. Reference the expected key(s).
-5. If the failure involved scope leakage, add `forbidden` keys.
-6. Run the existing retriever before changing code and confirm the new test actually reproduces the failure.
-7. Fix retrieval.
-8. Keep the case permanently.
+1. reduce it to the smallest representative fixture;
+2. add stable expected/forbidden keys;
+3. prove the case fails before changing retrieval;
+4. fix retrieval;
+5. keep the regression permanently.
 
-A golden set that only contains queries the current system already handles is not useful.
-
-## Complexity gate example
-
-Suppose the dataset eventually contains 200 real queries:
-
-```text
-lexical-only Recall@10:          0.80
-+ deterministic aliases:        0.84
-+ multi-query rewrite:           0.91
-+ embedding side index:          0.975
-```
-
-Then the vector index has a measurable reason to exist.
-
-If lexical/query rewrite already reaches 0.96 Recall@10 and hybrid vector retrieval reaches only 0.967, the extra model/index lifecycle may not justify the improvement.
-
-## Dataset versioning
-
-Do not silently rewrite historical expectations merely to make a new algorithm look better. If the semantic definition of relevance changes materially, document the reason in the commit and, when appropriate, create a new dataset version.
-
-The purpose of the golden set is to make architecture changes falsifiable.
+The purpose of the golden set is to make new complexity falsifiable. Query rewrite, reranking, embeddings, graph retrieval, or other machinery should not enter the runtime unless the dataset demonstrates a meaningful gain.
