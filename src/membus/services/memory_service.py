@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -47,23 +45,12 @@ _MUTABLE_FIELDS = {
 class MemoryService:
     """Stable domain API used by protocol adapters."""
 
-    def __init__(
-        self,
-        db: Database,
-        *,
-        retrieval_log_mode: str = "off",
-    ) -> None:
-        if retrieval_log_mode not in {"off", "metadata-only", "full"}:
-            raise ValueError(
-                "retrieval_log_mode must be one of: off, metadata-only, full"
-            )
-
+    def __init__(self, db: Database) -> None:
         self.db = db
         self.db.initialize()
         self.repository = MemoryRepository(db)
-        self.retrieval_log_mode = retrieval_log_mode
 
-    def put(self, create: MemoryCreate, *, actor: str | None = None) -> Memory:
+    def put(self, create: MemoryCreate) -> Memory:
         normalized = self._validate_create(create)
         now = _utcnow()
 
@@ -83,19 +70,13 @@ class MemoryService:
             updated_at=now,
             deleted_at=None,
         )
-        self.repository.create(memory, actor=actor)
+        self.repository.create(memory)
         return memory
 
     def get(self, memory_id: str, *, include_deleted: bool = False) -> Memory | None:
         return self.repository.get(memory_id, include_deleted=include_deleted)
 
-    def update(
-        self,
-        memory_id: str,
-        *,
-        actor: str | None = None,
-        **changes: Any,
-    ) -> Memory:
+    def update(self, memory_id: str, **changes: Any) -> Memory:
         unknown = set(changes) - _MUTABLE_FIELDS
         if unknown:
             raise ValueError(f"Unsupported mutable fields: {sorted(unknown)}")
@@ -108,11 +89,7 @@ class MemoryService:
         if not changes:
             return current
 
-        proposed = replace(
-            current,
-            **changes,
-            updated_at=_utcnow(),
-        )
+        proposed = replace(current, **changes, updated_at=_utcnow())
 
         normalized = self._validate_create(
             MemoryCreate(
@@ -143,26 +120,12 @@ class MemoryService:
             source_ref=_clean_optional(normalized.source_ref),
         )
 
-        changed_payload = {
-            key: getattr(final_memory, key)
-            for key in changes
-            if getattr(current, key) != getattr(final_memory, key)
-        }
-        if not changed_payload:
+        if final_memory == current:
             return current
+        return self.repository.update(final_memory)
 
-        return self.repository.update(
-            final_memory,
-            changed_fields=changed_payload,
-            actor=actor,
-        )
-
-    def delete(self, memory_id: str, *, actor: str | None = None) -> bool:
-        return self.repository.logical_delete(
-            memory_id,
-            deleted_at=_utcnow(),
-            actor=actor,
-        )
+    def delete(self, memory_id: str) -> bool:
+        return self.repository.logical_delete(memory_id, deleted_at=_utcnow())
 
     def put_alias(self, alias: str, canonical: str) -> None:
         alias = normalize_text(alias)
@@ -172,16 +135,7 @@ class MemoryService:
         self.repository.put_alias(alias, canonical, created_at=_utcnow())
 
     def search(self, request: SearchRequest) -> list[SearchResult]:
-        started = time.perf_counter()
-        results, candidate_count = self._search_unlogged(request)
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        self._log_search(
-            query=request.query,
-            request=request,
-            candidate_count=candidate_count,
-            results=results,
-            latency_ms=elapsed_ms,
-        )
+        results, _ = self._search_core(request)
         return results
 
     def search_many(self, request: SearchManyRequest) -> list[SearchResult]:
@@ -190,45 +144,31 @@ class MemoryService:
         if not (1 <= request.limit <= 100):
             raise ValueError("limit must be between 1 and 100")
 
-        started = time.perf_counter()
         merged: dict[str, SearchResult] = {}
-        total_candidates = 0
 
         for query in request.queries:
-            single = SearchRequest(
-                query=query,
-                context=request.context,
-                types=request.types,
-                limit=min(100, max(request.limit * 5, 25)),
-                explain=request.explain,
-                include_deleted=request.include_deleted,
+            results, _ = self._search_core(
+                SearchRequest(
+                    query=query,
+                    context=request.context,
+                    types=request.types,
+                    limit=min(100, max(request.limit * 5, 25)),
+                    explain=request.explain,
+                )
             )
-            results, candidate_count = self._search_unlogged(single)
-            total_candidates += candidate_count
 
             for result in results:
                 previous = merged.get(result.memory.id)
                 if previous is None or result.score > previous.score:
                     merged[result.memory.id] = result
 
-        fused = sorted(
+        return sorted(
             merged.values(),
             key=lambda result: (result.score, result.memory.updated_at),
             reverse=True,
-        )
-        final_results = fused[: request.limit]
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        )[: request.limit]
 
-        self._log_many_search(
-            queries=request.queries,
-            request=request,
-            candidate_count=total_candidates,
-            results=final_results,
-            latency_ms=elapsed_ms,
-        )
-        return final_results
-
-    def _search_unlogged(
+    def _search_core(
         self,
         request: SearchRequest,
     ) -> tuple[list[SearchResult], int]:
@@ -244,7 +184,6 @@ class MemoryService:
         exact_memories = self.repository.exact_candidates(
             query,
             types=types,
-            include_deleted=request.include_deleted,
             limit=pool_limit,
         )
 
@@ -258,7 +197,6 @@ class MemoryService:
             fts_memories = self.repository.fts_candidates(
                 fts_query,
                 types=types,
-                include_deleted=request.include_deleted,
                 limit=pool_limit,
             )
 
@@ -329,53 +267,6 @@ class MemoryService:
             reverse=True,
         )
         return ranked[: request.limit], len(candidates)
-
-    def _log_search(
-        self,
-        *,
-        query: str,
-        request: SearchRequest,
-        candidate_count: int,
-        results: list[SearchResult],
-        latency_ms: float,
-    ) -> None:
-        if self.retrieval_log_mode == "off":
-            return
-
-        self.repository.append_retrieval_log(
-            query=query if self.retrieval_log_mode == "full" else None,
-            scope=request.context.as_dict(),
-            candidate_count=candidate_count,
-            result_ids=[result.memory.id for result in results],
-            latency_ms=latency_ms,
-            created_at=_utcnow(),
-        )
-
-    def _log_many_search(
-        self,
-        *,
-        queries: tuple[str, ...],
-        request: SearchManyRequest,
-        candidate_count: int,
-        results: list[SearchResult],
-        latency_ms: float,
-    ) -> None:
-        if self.retrieval_log_mode == "off":
-            return
-
-        query_value = (
-            json.dumps(list(queries), ensure_ascii=False)
-            if self.retrieval_log_mode == "full"
-            else None
-        )
-        self.repository.append_retrieval_log(
-            query=query_value,
-            scope=request.context.as_dict(),
-            candidate_count=candidate_count,
-            result_ids=[result.memory.id for result in results],
-            latency_ms=latency_ms,
-            created_at=_utcnow(),
-        )
 
     @staticmethod
     def _normalize_types(types: tuple[str, ...]) -> tuple[str, ...]:
