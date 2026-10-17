@@ -17,8 +17,7 @@ CREATE TABLE IF NOT EXISTS memories (
 
 CREATE TABLE IF NOT EXISTS aliases (
     alias TEXT PRIMARY KEY,
-    canonical TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    canonical TEXT NOT NULL
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
