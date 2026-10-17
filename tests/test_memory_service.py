@@ -77,7 +77,7 @@ def test_project_scope_mismatch_is_excluded(service: MemoryService) -> None:
     ids = [result.memory.id for result in results]
     assert right.id in ids
     assert wrong.id not in ids
-    assert results[0].signals["scope_reason"] == "project match"
+    assert results[0].signals["scope_reason"] == "project applicable"
 
 
 def test_exact_technical_identifier_is_retrievable(service: MemoryService) -> None:
