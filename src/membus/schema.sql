@@ -6,11 +6,7 @@ CREATE TABLE IF NOT EXISTS memories (
     workspace TEXT,
     project TEXT,
     repo TEXT,
-    branch TEXT,
-    source_type TEXT,
-    source_ref TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    branch TEXT
 );
 
 CREATE TABLE IF NOT EXISTS aliases (
