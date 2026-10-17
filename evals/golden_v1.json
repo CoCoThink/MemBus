@@ -147,6 +147,46 @@
         "memory_type": "procedure",
         "workspace": "work"
       }
+    },
+    {
+      "key": "context_project_fallback",
+      "memory": {
+        "title": "General payment context guidance",
+        "content": "context-containment-marker applies to the payment project generally.",
+        "memory_type": "note",
+        "project": "payment"
+      }
+    },
+    {
+      "key": "context_personal_specific",
+      "memory": {
+        "title": "Personal payment context guidance",
+        "content": "context-containment-marker applies only to the personal payment workspace.",
+        "memory_type": "note",
+        "workspace": "personal",
+        "project": "payment"
+      }
+    },
+    {
+      "key": "repo_project_fallback",
+      "memory": {
+        "title": "Project deployment fallback",
+        "content": "repo-containment-marker applies to the payment project generally.",
+        "memory_type": "procedure",
+        "workspace": "work",
+        "project": "payment"
+      }
+    },
+    {
+      "key": "repo_specific_rule",
+      "memory": {
+        "title": "Payment API deployment rule",
+        "content": "repo-containment-marker applies only to payment-api.",
+        "memory_type": "procedure",
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      }
     }
   ],
   "queries": [
@@ -354,6 +394,33 @@
       ],
       "expected": [
         "payment_deploy"
+      ]
+    },
+    {
+      "name": "missing workspace excludes workspace-specific memory",
+      "query": "context-containment-marker",
+      "context": {
+        "project": "payment"
+      },
+      "expected": [
+        "context_project_fallback"
+      ],
+      "forbidden": [
+        "context_personal_specific"
+      ]
+    },
+    {
+      "name": "missing repo excludes repo-specific memory",
+      "query": "repo-containment-marker",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "repo_project_fallback"
+      ],
+      "forbidden": [
+        "repo_specific_rule"
       ]
     }
   ]
