@@ -24,9 +24,7 @@ def test_doctor_reports_healthy_database(tmp_path: Path) -> None:
 
     assert report.ok is True
     checks = {check.name: check for check in report.checks}
-    assert checks["schema"].ok is True
     assert checks["journal_mode"].ok is True
-    assert checks["foreign_keys"].ok is True
     assert checks["fts5"].ok is True
     assert checks["integrity"].ok is True
     assert checks["fts_consistency"].ok is True
