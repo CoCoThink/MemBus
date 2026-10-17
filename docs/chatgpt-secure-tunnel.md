@@ -103,23 +103,7 @@ tunnel-client
 
 The canonical database remains `~/.membus/memory.db` or the path configured with `MEMBUS_DB`.
 
-## 6. Optional client label only
-
-If useful for auditing, MemBus may accept a process-level diagnostic label such as:
-
-```bash
-MEMBUS_CLIENT=chatgpt-web
-```
-
-or:
-
-```bash
-MEMBUS_CLIENT=claude-code
-```
-
-This is diagnostic metadata only. In V1 it must not change retrieval, permissions, trust, scope, or write semantics.
-
-## 7. Generic improvements that help every MCP client
+## 6. Generic improvements that help every MCP client
 
 These improvements are reasonable, but they should be implemented once for all clients rather than as ChatGPT-specific behavior.
 
@@ -144,7 +128,6 @@ This is a retrieval convenience feature, not a ChatGPT security feature.
 Add `membus doctor` for application/data checks:
 
 - database readable
-- schema supported
 - WAL enabled
 - FTS5 available
 - integrity check
@@ -161,7 +144,7 @@ tunnel-client doctor
     = tunnel/connectivity health
 ```
 
-## 8. Deployment model
+## 7. Deployment model
 
 For the personal single-user case, stdio is enough.
 
@@ -179,7 +162,7 @@ No local TCP port is required.
 
 No extra MemBus authentication layer is required for the initial personal deployment.
 
-## 9. When should the design become more complicated?
+## 8. When should the design become more complicated?
 
 Only introduce more machinery when the use case actually changes.
 
@@ -201,7 +184,7 @@ Then add idempotency keys.
 
 These are future problem-driven changes, not prerequisites for ChatGPT Web access.
 
-## 10. Recommended current architecture
+## 9. Recommended current architecture
 
 ```text
                      MemBus Clients
@@ -231,6 +214,6 @@ The rule is simple:
 Secure MCP Tunnel changes connectivity, not MemBus semantics.
 
 
-## 11. Deployment runbook
+## 10. Deployment runbook
 
 For concrete install, health-check, tunnel-client, smoke-test, and optional systemd steps, see [`secure-tunnel-deployment.md`](secure-tunnel-deployment.md).
