@@ -38,7 +38,7 @@ Mean Reciprocal Rank measures how early the first expected memory appears: rank 
 
 The fraction of golden queries returning no result.
 
-### Wrong-scope hit rate
+### Wrong-context hit rate
 
 Golden cases can name `forbidden` memories. This detects scope leakage—for example, a query in `workspace=work / project=payment` must not return the same-named project from `workspace=personal`.
 
@@ -66,7 +66,7 @@ Apply quality gates:
 membus eval evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
-  --max-wrong-scope-rate 0.0
+  --max-wrong-context-rate 0.0
 ```
 
 A threshold failure exits with status code 2.
