@@ -109,7 +109,7 @@ In a ChatGPT workspace that supports custom MCP servers and has the required tun
 5. Verify a read first with `memory_search`.
 6. Verify a write with a harmless test memory, then remove it with `memory_delete`.
 
-ChatGPT should see the same six tools as local MCP clients:
+ChatGPT should see the same five tools as local MCP clients:
 
 ```text
 memory_put
@@ -117,7 +117,6 @@ memory_get
 memory_update
 memory_delete
 memory_search
-memory_search_many
 ```
 
 ## 8. Minimal end-to-end smoke test
@@ -129,7 +128,6 @@ membus --db "$MEMBUS_DB" put \
   --title 'MemBus tunnel smoke test' \
   --content 'The Secure MCP Tunnel smoke-test token is membus-tunnel-42.' \
   --memory-type fact \
-  --scope global
 ```
 
 Then, from ChatGPT, ask it to use MemBus to search for:
