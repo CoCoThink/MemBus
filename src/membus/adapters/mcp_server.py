@@ -7,9 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..models import MemoryCreate, SearchContext, SearchRequest
-from ..services.memory_service import MemoryService
-from ..store import SQLiteStore
+from ..core import MemBus
 
 
 def build_server(db_path: str | Path | None = None):
@@ -26,7 +24,7 @@ def build_server(db_path: str | Path | None = None):
         or (Path.home() / ".membus" / "memory.db")
     ).expanduser()
 
-    service = MemoryService(SQLiteStore(path))
+    bus = MemBus(path)
     mcp = MCPServer("MemBus")
 
     @mcp.tool()
@@ -38,32 +36,26 @@ def build_server(db_path: str | Path | None = None):
         project: str | None = None,
         repo: str | None = None,
         branch: str | None = None,
-        source_type: str | None = None,
-        source_ref: str | None = None,
     ) -> dict[str, Any]:
-        """Store an explicit durable memory."""
+        """Store a durable memory."""
 
         return asdict(
-            service.put(
-                MemoryCreate(
-                    title=title,
-                    content=content,
-                    memory_type=memory_type,
-                    workspace=workspace,
-                    project=project,
-                    repo=repo,
-                    branch=branch,
-                    source_type=source_type,
-                    source_ref=source_ref,
-                )
+            bus.put(
+                title=title,
+                content=content,
+                memory_type=memory_type,
+                workspace=workspace,
+                project=project,
+                repo=repo,
+                branch=branch,
             )
         )
 
     @mcp.tool()
     def memory_get(memory_id: str) -> dict[str, Any] | None:
-        """Get one memory by stable ID."""
+        """Get one memory by ID."""
 
-        memory = service.get(memory_id)
+        memory = bus.get(memory_id)
         return asdict(memory) if memory is not None else None
 
     @mcp.tool()
@@ -73,7 +65,7 @@ def build_server(db_path: str | Path | None = None):
     ) -> dict[str, Any]:
         """Update mutable fields of one memory."""
 
-        return asdict(service.update(memory_id, **changes))
+        return asdict(bus.update(memory_id, **changes))
 
     @mcp.tool()
     def memory_delete(memory_id: str) -> dict[str, Any]:
@@ -81,7 +73,7 @@ def build_server(db_path: str | Path | None = None):
 
         return {
             "memory_id": memory_id,
-            "deleted": service.delete(memory_id),
+            "deleted": bus.delete(memory_id),
         }
 
     @mcp.tool()
@@ -96,28 +88,18 @@ def build_server(db_path: str | Path | None = None):
     ) -> dict[str, Any]:
         """Search memories with exact matching, aliases, FTS5, and context isolation."""
 
-        results = service.search(
-            SearchRequest(
-                query=query,
-                context=SearchContext(
-                    workspace=workspace,
-                    project=project,
-                    repo=repo,
-                    branch=branch,
-                ),
-                types=tuple(types or ()),
-                limit=limit,
-            )
+        results = bus.search(
+            query,
+            workspace=workspace,
+            project=project,
+            repo=repo,
+            branch=branch,
+            types=types or (),
+            limit=limit,
         )
         return {
             "query": query,
-            "results": [
-                {
-                    "memory": asdict(result.memory),
-                    "match": result.match,
-                }
-                for result in results
-            ],
+            "results": [asdict(memory) for memory in results],
         }
 
     return mcp
