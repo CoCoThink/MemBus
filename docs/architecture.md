@@ -1,71 +1,62 @@
 # MemBus Architecture
 
-Status: Draft architecture baseline  
-Audience: maintainers, contributors, adapter authors
+Status: implementation baseline
 
-## 1. Architectural thesis
+## 1. Thesis
 
-MemBus is not a vendor-specific agent memory feature. It is a user-owned memory infrastructure layer.
+MemBus is a user-owned memory layer. Agent products are clients, not the system of record.
 
 ```text
-                Agent / Client Layer
- Claude Code | Codex | Cursor | Kimi | Grok | ...
+Claude Code / Codex / Cursor / ChatGPT / future agents
                          │
-                  MCP / CLI / HTTP
+                    MCP / CLI
+                         ▼
+                      adapters
                          │
                          ▼
-                  Adapter Layer
+                   MemoryService
+                  ┌──────┴──────┐
+                  │             │
+              repository     retrieval
+                  │             │
+                  └──────┬──────┘
+                         ▼
+                 canonical SQLite
                          │
                          ▼
-                   Memory Core
-              ┌──────────┼──────────┐
-              │          │          │
-           storage    retrieval   policy
-              │          │          │
-              └──────────┼──────────┘
-                         ▼
-                Canonical SQLite
-                         │
-              ┌──────────┼──────────┐
-              │          │          │
-             FTS     optional      optional
-                     vector         graph
-                     index          index
+                       FTS5
+                 (derived index)
 ```
 
-The canonical database is the system of record. Every search index is derived and replaceable.
+The canonical database owns memory. Adapters and retrieval indexes are replaceable.
 
-## 2. Architecture invariants
-
-The following rules are stronger than implementation choices.
+## 2. Invariants
 
 ### A1. No adapter owns memory
 
-MCP, CLI, HTTP, or an IDE plugin may disappear without invalidating the store.
+MCP, CLI, Secure MCP Tunnel, or a future transport may disappear without invalidating the store.
 
-### A2. No retrieval engine owns memory
+### A2. No index owns memory
 
-FTS5, HNSW, an embedding model, or a graph index may be rebuilt or replaced without changing canonical records.
+FTS5 and any future vector/graph index are derived from canonical records.
 
-### A3. Core does not depend on AI inference
+### A3. Core does not require AI inference
 
-The storage and baseline retrieval system must work without network access, API keys, or an LLM.
+Storage and baseline retrieval work without an LLM, embedding model, network, or API key.
 
-### A4. Scope is resolved before or during candidate selection
+### A4. Scope is a correctness boundary
 
-A high lexical score from the wrong project cannot be allowed to silently become authoritative context.
+Known workspace/project/repo/branch mismatches are excluded before a high text score can make them authoritative.
 
-### A5. Automatic writes are a higher-level feature
+### A5. Automatic memory formation stays above the core
 
-The core accepts validated memory operations. Future extraction/reflection modules produce candidates and call the same service contract.
+A future extractor may propose memories, but it must call the same validated service API.
 
-### A6. Retrieval must remain observable
+### A6. Retrieval stays observable
 
-A ranking change must be debuggable from logged signals and a reproducible evaluation set.
+Ranking behavior must be explainable and regression-tested.
 
-## 2.1 Transport neutrality
-
-Local coding agents and remotely connected clients use the same MemBus semantics.
+### A7. Transport does not change semantics
 
 ```text
 local client ── stdio ──────────────┐
@@ -73,67 +64,51 @@ local client ── stdio ──────────────┐
 ChatGPT Web ─ Secure MCP Tunnel ────┘
 ```
 
-ChatGPT Web is treated as another MCP client. Transport must not create a separate memory model, tool surface, ranking policy, or canonical store.
-
-More complex identity, ACL, visibility, or policy layers are deferred until a real multi-user or differentiated-access requirement appears.
+ChatGPT Web is another MCP client, not a second memory system.
 
 ## 3. Component boundaries
 
-### 3.1 Canonical store
+### Canonical store
 
-V1: SQLite.
+SQLite stores:
 
-Responsibilities:
+- canonical memories
+- deterministic aliases
+- mutation events
+- optional retrieval logs
+- schema version
 
-- canonical memory rows
-- memory metadata and scope
-- provenance
-- aliases/entities needed by deterministic retrieval
-- mutation event ledger
-- retrieval logs
-- schema versioning
+It does not store model state, embeddings, tunnel credentials, or task-management state.
 
-Not responsibilities:
+### Repository
 
-- model inference
-- embedding generation
-- MCP protocol
-- task management
-
-### 3.2 Repository layer
-
-The repository layer owns SQL and transaction-safe persistence.
+The repository owns SQL and persistence.
 
 Rules:
 
 - adapters never issue SQL
-- service layer does not know FTS implementation details
-- mutations use explicit transactions
-- application writes default to `BEGIN IMMEDIATE`; read-only operations do not open write transactions
+- service code does not depend on table layout
+- writes use explicit transactions
+- application writes default to `BEGIN IMMEDIATE`
 
-### 3.3 Retrieval engine
+### Retrieval
 
-V1 responsibilities:
+Current responsibilities:
 
-- normalize a query
-- optional deterministic alias expansion
-- execute FTS5/BM25 retrieval
-- apply scope eligibility/affinity
-- combine scoring signals
-- return explanation fields
-- support multi-query candidate union
+- normalize query text
+- exact/full-query candidate retrieval
+- deterministic alias expansion
+- FTS5/BM25 candidate retrieval
+- scope eligibility/affinity
+- lexical + scope ranking
+- multi-query candidate union
+- explanation signals
 
-Future responsibilities may include:
+There is no LLM, vector, graph, recency decay, importance score, confidence score, or trust score in the default path.
 
-- query rewrite
-- vector retrieval
-- RRF
-- graph expansion
-- learned reranking
+### Service
 
-### 3.4 Service layer
-
-Provides stable domain operations:
+Stable operations:
 
 ```text
 put
@@ -144,74 +119,87 @@ search
 search_many
 ```
 
-The service validates:
+The service validates memory type, scope structure, mutation fields, and content.
 
-- memory type
-- scope
-- ID semantics
-- mutation semantics
-- source metadata
+### Adapters
 
-### 3.5 Adapter layer
+Current adapters/interfaces:
 
-Adapters translate external protocols to the service contract.
-
-Initial target:
-
-- MCP
-
-Future adapters:
-
+- MCP stdio
 - CLI
-- HTTP
-- Python SDK
-- Unix socket
-- editor integrations
 
-Adapters must be stateless where feasible.
+Secure MCP Tunnel forwards to the same stdio MCP server.
 
-## 4. Read path
+## 4. Canonical memory shape
 
-V1:
+Current schema version 2 intentionally contains only fields with runtime meaning:
+
+```text
+id
+title
+content
+memory_type
+
+scope
+workspace
+project
+repo
+branch
+
+source_type
+source_ref
+
+created_at
+updated_at
+deleted_at
+```
+
+A memory is active when `deleted_at IS NULL`.
+
+The schema does not reserve generic future fields such as importance, confidence, trust, validity windows, or supersession links. They can be added by migration when their semantics exist.
+
+## 5. Read path
 
 ```text
 query
   │
-  ▼
-normalize
+  ├── exact full-query substring
   │
-  ├── exact/identifier terms
-  └── alias expansion
+  └── tokenize -> aliases -> FTS5
   │
   ▼
-resolve scope
+candidate union
   │
   ▼
-FTS5 candidate retrieval
+scope eligibility
   │
   ▼
-scope / recency / importance / trust scoring
+0.80 lexical + 0.20 scope
   │
   ▼
-Top-K
-  │
-  ├── result
-  └── explanation
+Top-K + optional explanation
 ```
 
-Batch search:
+Exact technical evidence can independently enter the candidate pool.
+
+Examples:
+
+- `BUG-18472`
+- `generated/client.ts`
+- `reconcilePayment`
+- `max_connections`
+
+### Multi-query
 
 ```text
 Q1 ──┐
-Q2 ──┼──> candidate union / fusion ──> rerank ──> Top-K
+Q2 ──┼──> union by memory ID -> keep best score -> Top-K
 Q3 ──┘
 ```
 
-V1 deliberately does not require an LLM between the caller and FTS.
+There is no extra hit-count bonus.
 
-## 5. Write path
-
-V1 explicit write path:
+## 6. Write path
 
 ```text
 client request
@@ -220,84 +208,20 @@ client request
 validation
       │
       ▼
-transaction
+BEGIN IMMEDIATE
       ├── canonical mutation
-      ├── FTS synchronization
-      └── event ledger append
+      ├── FTS trigger
+      └── event append
       │
       ▼
 commit
 ```
 
-Future autonomous path:
-
-```text
-conversation / source event
-          │
-          ▼
- candidate extraction
-          │
-          ▼
- existing-memory lookup
-          │
-          ▼
- memory gate
-   ┌──────┼───────┐
-   │      │       │
- dedup conflict durable?
-   │      │       │
-   └──────┼───────┘
-          ▼
- approved candidate
-          │
-          ▼
-      core service
-```
-
-The future extractor is not allowed to bypass the core service.
-
-## 6. Retrieval scoring
-
-V1 starts with an intentionally simple transparent model:
-
-```text
-final_score =
-    w_lexical    * lexical_score
-  + w_scope      * scope_score
-  + w_recency    * recency_score
-  + w_importance * importance
-  + w_trust      * trust
-```
-
-Initial default weights:
-
-```text
-lexical    0.60
-scope      0.15
-recency    0.10
-importance 0.10
-trust      0.05
-```
-
-These are defaults, not truths. They must eventually be tuned with a golden retrieval set.
-
-### Why lexical is dominant in V1
-
-Coding memory contains high-value literal identifiers:
-
-- symbols
-- paths
-- issue IDs
-- error codes
-- configuration keys
-- command names
-- service names
-
-A semantic gate must never suppress exact evidence such as `BUG-18472`.
+Logical delete sets `deleted_at`. It does not remove the canonical row.
 
 ## 7. Scope model
 
-Supported V1 scopes:
+Scopes:
 
 ```text
 global
@@ -307,298 +231,117 @@ repo
 branch
 ```
 
-A record's scope determines which contextual fields are meaningful.
+Scope has two jobs:
 
-Example:
+1. reject known mismatches
+2. weakly prefer more specific applicable context
 
-```yaml
-scope: repo
-workspace: work
-project: payments
-repo: payment-api
-branch: null
-```
-
-Resolution should favor the most specific applicable context while allowing inherited global/project knowledge.
-
-A future policy may encode scope as:
+Current affinity:
 
 ```text
-global
-  ↓
-workspace
-  ↓
-project
-  ↓
-repo
-  ↓
-branch
+global     0.40
+workspace  0.60
+project    0.75
+repo       0.90
+branch     1.00
 ```
 
-but V1 keeps eligibility rules explicit rather than implementing a general namespace algebra.
+A known mismatch is ineligible, not merely lower ranked.
 
 ## 8. Persistence and concurrency
 
-SQLite configuration:
+SQLite uses:
 
-- WAL journal mode
-- foreign keys ON
+- WAL
+- foreign keys
 - busy timeout
-- explicit transactions
-- bounded retry for transient `SQLITE_BUSY`
+- bounded retry for transient lock contention
 
-All application-level write transactions default to:
+All application writes start with:
 
 ```sql
 BEGIN IMMEDIATE;
 ```
 
-This is deliberate. Multi-process stress testing reproduced `database is locked`
-failures with deferred write transactions when independent processes attempted
-to upgrade to the writer lock at their first mutation.
+This decision came from an actual multi-process failure with deferred transactions. Since SQLite has one writer anyway, acquiring the writer reservation at transaction start makes contention predictable without sacrificing useful writer parallelism.
 
-SQLite permits only one writer at a time anyway, so reserving the writer slot at
-the transaction boundary does not remove useful write parallelism. It moves
-contention to a predictable point where `busy_timeout` and bounded retry can
-queue writers safely.
+Read-only operations do not open write transactions.
 
-Read-only operations do not open a write transaction.
+## 9. FTS and indexes
 
-## 9. Backup model
+FTS5 is derived state synchronized by SQLite triggers.
 
-With WAL enabled, raw copying of only the main database file can produce an incomplete snapshot.
-
-Primary supported backup path:
+The canonical schema keeps only the additional index currently needed for event lookup:
 
 ```text
-SQLite source connection
-       │
-       └── sqlite3 backup API
-                 │
-                 ▼
-          consistent backup DB
+idx_events_memory_id
 ```
 
-Derived indexes need not be backed up if they are reproducible.
+Other metadata indexes are added only after query plans or measurements show a need.
 
-## 10. Schema evolution
+## 10. Backup and health
+
+Backups use SQLite's backup API.
+
+`membus doctor` owns application/data health:
+
+- schema
+- WAL
+- foreign keys
+- FTS5
+- integrity
+- canonical/FTS consistency
+- write readiness
+
+`tunnel-client doctor` owns tunnel/control-plane health.
+
+## 11. Schema evolution
 
 The database stores a schema version.
 
 Rules:
 
-1. migrations are ordered and deterministic
-2. migrations are transactional where SQLite allows
-3. startup refuses a database newer than the running binary understands
-4. migrations never make a derived index the only copy of canonical content
-5. destructive migration requires an explicit compatibility decision
+1. fresh DBs are created directly at the current schema
+2. older supported DBs use ordered migrations
+3. newer DBs are rejected by older binaries
+4. canonical data is never moved exclusively into a derived index
+5. destructive contractions preserve meaningful removed data in audit history when practical
 
-## 11. Evolution roadmap
+Schema v2 is the first real migration and deliberately removed unused scoring/lifecycle fields plus the redundant status column.
 
-The roadmap is a sequence of evidence gates, not a feature checklist.
+## 12. Evaluation
 
-### V0: Files + grep
+The Golden Retrieval Evaluation is the gate for retrieval complexity.
 
-Use when the dataset is tiny and direct textual inspection is enough.
+Current default path stays lexical-first until measured failures justify more machinery.
 
-Adds almost no infrastructure.
-
-Upgrade when ranking and filtering become a recurring problem.
-
-### V1: SQLite + FTS5/BM25
-
-Adds:
-
-- structured canonical records
-- ranking
-- transactions
-- auditability
-
-Needed when grep produces too many unordered hits.
-
-### V2: Scope / metadata / types
-
-Adds:
-
-- cross-project correctness
-- filtered retrieval
-- typed memories
-
-Needed as soon as multiple projects or workspaces can contain conflicting facts.
-
-### V3: Alias / entity normalization
-
-Adds:
-
-- deterministic synonym handling
-- mixed Chinese/English technical vocabulary
-- stable entity naming
-
-Needed when misses are caused by `pg/postgres/PostgreSQL`, `prod/production/线上`, etc.
-
-### V4: Query rewrite / multi-query
-
-Adds:
-
-- semantic understanding at query time without requiring a vector DB
-- parallel lexical probes
-
-Needed when manual query reformulation reliably recovers missed memories.
-
-### V5: Reranking + formal evaluation
-
-Adds:
-
-- Top-K quality improvement
-- measurable architecture decisions
-
-Needed when relevant memories are usually retrieved but rank too low.
-
-### V6: Embedding side index
-
-Adds:
-
-- paraphrase recall
-- abstract semantic similarity
-- cross-language semantic retrieval
-
-Cost:
-
-- embedding model/version lifecycle
-- index build and migration
-- memory footprint
-- new failure modes
-
-Only needed when an evaluation set proves lexical/query-rewrite recall is inadequate.
-
-The vector index remains derived:
-
-```text
-SQLite canonical data
-        │
-        └── rebuild → HNSW/vector index
-```
-
-### V7: Temporal lifecycle and conflicts
-
-Adds:
-
-- `valid_from`
-- `valid_until`
-- `supersedes`
-- canonical/outdated/conflict state
-
-Needed once long-lived facts change often enough that stale memory becomes dangerous.
-
-### V8: Entity graph / multi-hop retrieval
-
-Adds relational expansion:
-
-```text
-payment-service
-   ├── uses → PostgreSQL
-   ├── deployed_on → prod-cluster
-   └── depends_on → provider-X
-```
-
-Needed when answers commonly require traversing relationships rather than retrieving one record.
-
-### V9: Gateway / ACL
-
-Adds:
-
-- client identity
-- namespace permissions
-- audit policy
-- least privilege
-
-Needed when multiple agents should not all see the same memory domains.
-
-### V10: Automatic extraction / consolidation
-
-Adds:
-
-- candidate extraction
-- memory gating
-- dedup
-- conflict detection
-- promotion
-
-Needed only when explicit write workflows become a maintenance bottleneck.
-
-### V11: Vector DB / distributed architecture
-
-Adds:
-
-- sharding
-- replication
-- multi-node availability
-- large-scale vector serving
-
-Needed only when local SQLite + side indexes become a measured capacity or availability bottleneck.
-
-## 12. Complexity budget
-
-Before adding any major subsystem, the proposal should state:
+A proposed subsystem should answer:
 
 ```text
 Observed failure:
-Measurement window:
 Failure rate:
-Why current architecture cannot fix it:
-Proposed component:
-Expected metric improvement:
+Why the current path cannot fix it:
+Expected metric gain:
 Operational cost:
 Rollback path:
 ```
 
-Example:
+## 13. Evidence gates
 
-```text
-Observed failure:
-41 / 200 golden queries miss the correct memory at Recall@10
-because query and memory have almost no lexical overlap.
+Add deterministic/LLM query rewriting when lexical misses are repeatedly recoverable by reformulation.
 
-Query rewrite recovers 17/41.
-A vector side index recovers 36/41.
+Add reranking when the correct memory is already retrieved but commonly ranks too low.
 
-Decision:
-Introduce an optional embedding index because Recall@10
-improves from 79.5% to 97.5%.
-```
+Add an embedding side index when lexical + aliases + reformulation still miss materially relevant memories.
 
-This is the standard for justified complexity.
+Add temporal validity and supersession when stale/conflicting facts become a recurring error source.
 
-## 13. Intended steady-state “sweet spot”
+Add graph traversal when answers repeatedly require multi-hop relationships.
 
-For a personal coding memory bus, the likely long-term sweet spot is:
+Add ACL/identity when different users or clients actually require different access.
 
-```text
-                    adapters
-                       │
-                    MemBus
-                       │
-          ┌────────────┼────────────┐
-          │            │            │
-       SQLite         FTS5       optional HNSW
-          │            │            │
-          └────────────┼────────────┘
-                       │
-               retrieval engine
-                       │
-        scope / alias / metadata
-                       │
-              multi-query / fusion
-                       │
-                  reranker
-```
+Add automatic extraction when explicit writes become a measured bottleneck and memory pollution can be evaluated.
 
-with:
+Add distributed/vector-database infrastructure only when SQLite plus derived indexes reaches a demonstrated capacity or availability limit.
 
-- provenance
-- event history
-- retrieval logs
-- temporal lifecycle
-- a golden evaluation set
-
-Graph databases, hosted vector databases, and autonomous consolidation remain optional extensions rather than architectural prerequisites.
+These are possible responses to evidence, not promised architecture layers.
