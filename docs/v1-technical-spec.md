@@ -24,7 +24,6 @@ src/membus/
 ├── evaluation.py
 ├── retrieval/
 │   ├── lexical.py
-│   ├── ranking.py
 │   └── scope.py
 ├── services/
 │   └── memory_service.py
@@ -56,8 +55,7 @@ CREATE TABLE memories (
 
 CREATE TABLE aliases (
     alias TEXT PRIMARY KEY,
-    canonical TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    canonical TEXT NOT NULL
 );
 
 CREATE VIRTUAL TABLE memory_fts USING fts5(
@@ -153,7 +151,7 @@ query
      scope eligibility
           │
           ▼
-     lexical + scope
+     lexical relevance
           │
           ▼
         Top-K
@@ -163,27 +161,13 @@ Exact matches receive lexical score `1.0`.
 
 FTS candidates are ordered by SQLite BM25 and converted to a bounded rank-based lexical score.
 
-Final ranking:
+Final score is the lexical relevance score after scope eligibility filtering.
 
-```text
-score =
-    0.80 * lexical
-  + 0.20 * scope
-```
+When `explain=true`, signals include lexical score, scope eligibility reason, exact-match state, raw BM25 where applicable, and alias expansion where applicable.
 
-When `explain=true`, signals include lexical score, scope score/reason, exact-match state, raw BM25 where applicable, and alias expansion where applicable.
+## 8. Scope eligibility
 
-## 8. Scope affinity
-
-```text
-global     0.40
-workspace  0.60
-project    0.75
-repo       0.90
-branch     1.00
-```
-
-Known context mismatches are excluded rather than merely down-ranked.
+Known context mismatches are excluded. Applicable scope does not add a ranking bonus.
 
 ## 9. Multi-query
 
@@ -242,7 +226,6 @@ The isolated Golden Retrieval Evaluation tracks:
 - Recall@5
 - Recall@10
 - MRR
-- Precision@5
 - zero-result rate
 - wrong-scope hit rate
 - P50/P95 latency
