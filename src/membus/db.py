@@ -8,11 +8,9 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-from .migrations import CURRENT_SCHEMA_VERSION, migrate
-
 
 class Database:
-    """Owns SQLite connections, initialization, transactions, and backups."""
+    """Owns SQLite connections, initialization, write transactions, and backups."""
 
     def __init__(
         self,
@@ -33,7 +31,6 @@ class Database:
             isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
@@ -41,29 +38,15 @@ class Database:
     def initialize(self) -> None:
         with contextlib.closing(self.connect()) as conn:
             self._ensure_wal(conn)
-            version = migrate(conn)
-            if version != CURRENT_SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"MemBus expected schema {CURRENT_SCHEMA_VERSION}, found {version}"
-                )
-
-            # Lightweight startup verification: fail early if the canonical
-            # table or FTS index disappeared even when schema_meta survived.
-            required = {"memories", "memory_fts", "memory_events"}
-            rows = conn.execute(
-                """
-                SELECT name
-                FROM sqlite_master
-                WHERE name IN ('memories', 'memory_fts', 'memory_events')
-                """
-            ).fetchall()
-            found = {str(row["name"]) for row in rows}
-            missing = required - found
-            if missing:
-                raise RuntimeError(
-                    "MemBus schema is incomplete; missing: "
-                    + ", ".join(sorted(missing))
-                )
+            schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
+            try:
+                conn.executescript(schema)
+            except sqlite3.OperationalError as exc:
+                if "fts5" in str(exc).lower():
+                    raise RuntimeError(
+                        "This SQLite build does not provide FTS5, which MemBus requires."
+                    ) from exc
+                raise
 
     def _ensure_wal(self, conn: sqlite3.Connection) -> None:
         last_error: sqlite3.OperationalError | None = None
@@ -94,21 +77,12 @@ class Database:
             conn.close()
 
     @contextlib.contextmanager
-    def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
-        """Open a write transaction.
-
-        MemBus defaults all application write transactions to BEGIN IMMEDIATE.
-        SQLite only permits one writer anyway; reserving the writer slot at the
-        transaction boundary avoids deferred-transaction lock-upgrade races
-        across independent agent processes. Pass immediate=False only for a
-        deliberately deferred transaction with no read-to-write upgrade risk.
-        """
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Open the single application write transaction shape: BEGIN IMMEDIATE."""
 
         conn = self.connect()
-        begin = "BEGIN IMMEDIATE" if immediate else "BEGIN"
-
         try:
-            self._begin_with_retry(conn, begin)
+            self._begin_with_retry(conn)
             try:
                 yield conn
             except BaseException:
@@ -119,12 +93,12 @@ class Database:
         finally:
             conn.close()
 
-    def _begin_with_retry(self, conn: sqlite3.Connection, begin: str) -> None:
+    def _begin_with_retry(self, conn: sqlite3.Connection) -> None:
         last_error: sqlite3.OperationalError | None = None
 
         for attempt in range(self.begin_retry_attempts):
             try:
-                conn.execute(begin)
+                conn.execute("BEGIN IMMEDIATE")
                 return
             except sqlite3.OperationalError as exc:
                 message = str(exc).lower()
