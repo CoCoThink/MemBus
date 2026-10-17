@@ -25,8 +25,7 @@
       "memory": {
         "title": "Python package manager preference",
         "content": "Python projects should prefer uv for package and dependency management instead of Poetry.",
-        "memory_type": "preference",
-        "scope": "global"
+        "memory_type": "preference"
       }
     },
     {
@@ -35,7 +34,6 @@
         "title": "Do not edit generated/client.ts",
         "content": "generated/client.ts is generated from OpenAPI and must never be edited manually.",
         "memory_type": "procedure",
-        "scope": "repo",
         "workspace": "work",
         "project": "payment",
         "repo": "payment-api"
@@ -47,7 +45,6 @@
         "title": "BUG-18472 settlement retry incident",
         "content": "BUG-18472 was caused by reconcilePayment retrying after a partial settlement response.",
         "memory_type": "incident",
-        "scope": "project",
         "workspace": "work",
         "project": "payment"
       }
@@ -58,7 +55,6 @@
         "title": "Settlement concurrency decision",
         "content": "Settlement submission must not run concurrently because the provider lacks reliable idempotency guarantees.",
         "memory_type": "decision",
-        "scope": "project",
         "workspace": "work",
         "project": "payment"
       }
@@ -69,7 +65,6 @@
         "title": "PostgreSQL connection pool exhaustion",
         "content": "The payment service exhausted the PostgreSQL connection pool after worker concurrency was increased.",
         "memory_type": "incident",
-        "scope": "project",
         "workspace": "work",
         "project": "payment"
       }
@@ -80,7 +75,6 @@
         "title": "Payment production deployment procedure",
         "content": "Before production deployment run database migrations and the websocket smoke test.",
         "memory_type": "procedure",
-        "scope": "repo",
         "workspace": "work",
         "project": "payment",
         "repo": "payment-api"
@@ -92,7 +86,6 @@
         "title": "Payment PostgreSQL version",
         "content": "The payment project production database runs PostgreSQL 17.",
         "memory_type": "fact",
-        "scope": "project",
         "workspace": "work",
         "project": "payment"
       }
@@ -103,7 +96,6 @@
         "title": "Analytics PostgreSQL version",
         "content": "The analytics project production database runs PostgreSQL 15.",
         "memory_type": "fact",
-        "scope": "project",
         "workspace": "work",
         "project": "analytics"
       }
@@ -114,7 +106,6 @@
         "title": "Personal payment project database",
         "content": "The personal workspace payment project uses SQLite for local persistence.",
         "memory_type": "fact",
-        "scope": "project",
         "workspace": "personal",
         "project": "payment"
       }
@@ -124,8 +115,7 @@
       "memory": {
         "title": "Claude Code memory rule",
         "content": "Claude Code must use MemBus rather than a vendor-owned private memory as the long-term system of record.",
-        "memory_type": "decision",
-        "scope": "global"
+        "memory_type": "decision"
       }
     },
     {
@@ -134,7 +124,6 @@
         "title": "Why Kubernetes is not used",
         "content": "Kubernetes was rejected because the deployment currently operates only three servers and does not justify cluster complexity.",
         "memory_type": "decision",
-        "scope": "project",
         "workspace": "work",
         "project": "payment"
       }
@@ -145,7 +134,6 @@
         "title": "Websocket proxy incident",
         "content": "Enabling the proxy on the websocket endpoint caused connection resets during long-lived sessions.",
         "memory_type": "failure",
-        "scope": "repo",
         "workspace": "work",
         "project": "payment",
         "repo": "payment-api"
@@ -157,7 +145,6 @@
         "title": "Redis cache flush procedure",
         "content": "Before flushing Redis in production verify the cache namespace and capture the affected service list.",
         "memory_type": "procedure",
-        "scope": "workspace",
         "workspace": "work"
       }
     }
