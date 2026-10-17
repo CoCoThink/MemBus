@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("dataset")
     evaluate.add_argument("--min-recall-5", type=float)
     evaluate.add_argument("--min-recall-10", type=float)
-    evaluate.add_argument("--max-wrong-scope-rate", type=float)
+    evaluate.add_argument("--max-wrong-context-rate", type=float)
 
     return parser
 
@@ -99,13 +99,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"recall@10 {report.recall_at_10:.4f} < {args.min_recall_10:.4f}"
             )
         if (
-            args.max_wrong_scope_rate is not None
-            and report.wrong_scope_hit_rate > args.max_wrong_scope_rate
+            args.max_wrong_context_rate is not None
+            and report.wrong_context_hit_rate > args.max_wrong_context_rate
         ):
             failures.append(
-                "wrong-scope rate "
-                f"{report.wrong_scope_hit_rate:.4f} > "
-                f"{args.max_wrong_scope_rate:.4f}"
+                "wrong-context rate "
+                f"{report.wrong_context_hit_rate:.4f} > "
+                f"{args.max_wrong_context_rate:.4f}"
             )
 
         for failure in failures:
