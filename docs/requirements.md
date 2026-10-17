@@ -1,123 +1,87 @@
 # MemBus Requirements
 
-Status: Draft for V1 implementation  
-Scope: user-sovereign long-term memory infrastructure for AI agents
+Status: V1 implementation baseline  
+Scope: user-owned long-term memory infrastructure for AI agents
 
-## 1. Problem statement
+## 1. Problem
 
-AI coding and knowledge-work clients increasingly maintain their own private memory, rules, chat history, and project context. That creates vendor lock-in and fragments the user's long-term state across products and accounts.
+Agent products increasingly keep memory inside their own product boundary. That fragments long-term state and creates vendor lock-in.
 
-MemBus treats agent applications as replaceable clients. Long-term memory is an independent user-owned system of record.
+MemBus treats agents as replaceable clients:
 
 ```text
-Claude Code / Codex / Cursor / Kimi / Grok / future agents
+Claude Code / Codex / Cursor / ChatGPT / future agents
                          │
-                         │ adapter (MCP / CLI / HTTP)
+                    MCP / CLI
                          ▼
-                      MemBus
-                         │
+                       MemBus
                          ▼
-              user-owned canonical store
+               user-owned SQLite store
 ```
 
-The V1 goal is not to build an autonomous cognitive architecture. It is to establish a reliable, inspectable, low-latency local memory core that can evolve without changing ownership of the data.
+The V1 goal is a small, reliable, inspectable memory core. It is not an autonomous cognitive architecture.
 
-## 2. Product principles
+## 2. Principles
 
 ### P1. User sovereignty
 
-The canonical memory store MUST remain usable if any individual model vendor, agent client, account, protocol, or retrieval subsystem disappears.
+Canonical memory remains usable if any agent vendor, account, protocol, or retrieval subsystem disappears.
 
-### P2. Local-first
+### P2. Local first
 
-V1 MUST work entirely on a local machine with SQLite and without a mandatory cloud service.
+V1 works with local SQLite and requires no hosted service.
 
-### P3. Lexical-first
+### P3. Lexical first
 
-V1 MUST provide useful retrieval with exact matching and SQLite FTS5/BM25. Embeddings and vector search MUST NOT be required for correctness.
+Exact matching and SQLite FTS5/BM25 are sufficient for baseline correctness. Embeddings are optional future indexes.
 
 ### P4. Derived indexes are disposable
 
-Any index, cache, embedding, graph projection, or materialized retrieval structure MUST be rebuildable from canonical records.
+FTS, vector indexes, graph projections, and caches must be rebuildable from canonical records.
 
 ### P5. Scope is a correctness boundary
 
-Workspace/project/repository/branch context MUST participate in candidate eligibility or ranking. Scope MUST NOT be treated as an untrusted free-form tag.
+Workspace/project/repo/branch mismatches must not leak unrelated memory into the result set.
 
 ### P6. Read/write separation
 
-Memory retrieval and memory formation MUST be separate pipelines. A future automatic extractor MUST NOT be required by the V1 read path.
+Retrieval and future automatic memory formation are separate pipelines.
 
 ### P7. Explainability
 
-A caller SHOULD be able to understand why a memory was returned: lexical score, scope match, recency, importance, trust, and other future signals.
+The caller can inspect the lexical and scope signals that produced a result.
 
 ### P8. Progressive complexity
 
-A new subsystem (embeddings, graph, LLM reranker, automatic extraction, vector DB, distributed service) SHOULD be introduced only when a measured failure mode justifies it.
+A feature is added only when a measured failure justifies it.
 
-## 3. Primary users
+## 3. Users and non-goals
 
-### U1. Single technical user
+Primary target:
 
-A developer who wants the same long-term project memory available to multiple AI coding tools.
+- one technical user
+- several agent clients owned by that user
+- one canonical memory store
 
-### U2. Multiple agent clients owned by one user
+V1 does not target multi-user SaaS.
 
-Several local or remote clients accessing one MemBus store with different current workspaces/projects.
+V1 does not require:
 
-Multi-user SaaS is explicitly outside V1.
+- embeddings
+- vector DB
+- graph DB
+- LLM query rewriting
+- LLM reranking
+- automatic conversation ingestion
+- automatic memory extraction
+- autonomous consolidation
+- multi-user ACL
+- distributed storage
+- hosted control plane
 
-## 4. Core use cases
+## 4. Canonical memory
 
-### UC-1: Store an explicit durable memory
-
-Example:
-
-> generated/client.ts is generated from OpenAPI and must never be edited manually.
-
-The caller stores this as a `procedure` scoped to a repository and records the source.
-
-### UC-2: Retrieve relevant prior knowledge
-
-Example query:
-
-> Why did payment settlement previously fail under concurrency?
-
-MemBus searches applicable scopes, ranks textual matches, and returns the best memories with provenance and scoring details.
-
-### UC-3: Retrieve an exact technical identifier
-
-Examples:
-
-- `BUG-18472`
-- `reconcilePayment`
-- `src/payment/reconcile.ts`
-- `max_connections`
-
-Exact and lexical signals must not be gated by semantic similarity.
-
-### UC-4: Use the same memory from different agents
-
-Claude Code writes a project decision. Codex later retrieves it through another adapter/process.
-
-### UC-5: Update a changing fact without silently destroying history
-
-V1 provides explicit update/delete operations and an event ledger. Temporal supersession becomes a later lifecycle feature, but V1 MUST preserve enough event history to evolve toward it.
-
-### UC-6: Explain retrieval
-
-A caller requests `explain=true` and receives the component scores used to rank each result.
-
-### UC-7: Backup and recover
-
-The user can create a consistent SQLite backup while WAL mode is enabled.
-
-## 5. Functional requirements
-
-### FR-001 Canonical memory records
-
-MemBus MUST store memory records containing at least:
+A V1 memory contains:
 
 - stable ID
 - title
@@ -125,259 +89,242 @@ MemBus MUST store memory records containing at least:
 - memory type
 - scope
 - optional workspace/project/repo/branch
-- status
-- importance
-- confidence
-- trust
-- source type/reference
-- validity fields reserved for lifecycle evolution
+- optional source type/reference
 - created/updated timestamps
+- optional deleted timestamp
 
-### FR-002 Memory types
+Fields without current runtime semantics do not belong in the canonical row.
 
-V1 MUST support at least:
-
-- `fact`
-- `decision`
-- `preference`
-- `procedure`
-- `incident`
-- `failure`
-- `note`
-
-The database SHOULD allow future types without schema redesign.
-
-### FR-003 Scope hierarchy
-
-V1 MUST support:
-
-- `global`
-- `workspace`
-- `project`
-- `repo`
-- `branch`
-
-Scope fields MUST be validated consistently.
-
-### FR-004 CRUD
-
-The core service MUST implement:
-
-- `put`
-- `get`
-- `update`
-- `delete`
-
-Deletes in V1 SHOULD default to logical deletion unless a maintenance operation explicitly requests physical deletion.
-
-### FR-005 Search
-
-The core service MUST implement:
-
-- single-query search
-- batch/multi-query search
-
-Search MUST work with only SQLite + FTS5.
-
-### FR-006 FTS synchronization
-
-Canonical writes and the FTS index MUST remain transactionally consistent.
-
-### FR-007 Alias support
-
-V1 SHOULD support a small alias table for deterministic expansion such as:
+In particular, V1 does not carry generic:
 
 ```text
-pg -> postgresql
-prod -> production
-cc -> claude code
+importance
+confidence
+trust
+valid_from
+valid_until
+supersedes_id
 ```
 
-Alias expansion MUST be optional and observable.
+Those concepts may return later with explicit semantics and evaluation evidence.
 
-### FR-008 Retrieval scoring
+## 5. Memory types
 
-V1 ranking MUST include lexical relevance and MAY include:
+V1 supports:
 
-- scope affinity
-- recency
-- importance
-- trust
+```text
+fact
+decision
+preference
+procedure
+incident
+failure
+note
+```
 
-The scorer MUST expose component signals for debugging.
+## 6. Scope
 
-### FR-009 Provenance
+V1 supports:
 
-Every durable memory SHOULD retain a source type and source reference when available.
+```text
+global
+workspace
+project
+repo
+branch
+```
 
-### FR-010 Event ledger
+Required fields:
 
-Writes MUST append a mutation event sufficient to audit:
+| scope | required |
+|---|---|
+| global | none |
+| workspace | workspace |
+| project | project |
+| repo | repo |
+| branch | repo + branch |
 
-- create
-- update
-- logical delete
-- restore (when implemented)
+Known parent mismatches are ineligible, not merely lower ranked.
 
-### FR-011 Retrieval log
+## 7. Core operations
 
-Searches SHOULD record:
+The service provides:
 
-- query
-- resolved scope
-- candidate IDs or count
+```text
+put
+get
+update
+delete
+search
+search_many
+```
+
+Delete is logical: `deleted_at` is set and the canonical row remains auditable.
+
+The MCP adapter exposes the same six operations and does not own storage semantics.
+
+## 8. Retrieval
+
+Search must work with SQLite + FTS5 only.
+
+Candidate sources:
+
+1. exact/full-query substring matching
+2. FTS5 lexical matching with deterministic alias expansion
+
+Exact identifiers such as issue IDs, paths, symbols, and config keys must be able to enter the candidate set independently.
+
+V1 ranking is intentionally small:
+
+```text
+score =
+    0.80 * lexical
+  + 0.20 * scope
+```
+
+No recency, importance, confidence, or trust signal is used by default.
+
+`search_many` unions results from several lexical formulations and keeps the best score per memory. It does not add an arbitrary multi-query bonus.
+
+## 9. Provenance and audit
+
+A memory may retain:
+
+```text
+source_type
+source_ref
+```
+
+Mutations append an event in the same transaction.
+
+Normal events:
+
+```text
+created
+updated
+deleted
+```
+
+Events should not duplicate full memory content when a compact changed-field payload is enough.
+
+External content is not automatically durable memory. Any future automatic extraction layer must call the same validated service contract.
+
+## 10. Retrieval logging
+
+Retrieval logging is optional.
+
+Modes:
+
+```text
+off
+metadata-only
+full
+```
+
+A log records only:
+
+- optional query text
+- scope context
+- candidate count
 - returned IDs
 - latency
-- optional scoring/debug payload
+- timestamp
 
-Logging MUST be configurable so sensitive deployments can reduce retained query text.
+There is no generic debug blob in the canonical schema.
 
-### FR-012 Backup
+## 11. Persistence and concurrency
 
-MemBus MUST use SQLite's backup API or an equivalent consistent snapshot mechanism. Raw copying of the main DB file while WAL is active MUST NOT be documented as the primary backup method.
+V1 uses SQLite WAL.
 
-### FR-013 MCP adapter
+Requirements:
 
-V1 MUST expose the core through MCP, but the domain/core packages MUST NOT depend on MCP.
+- foreign keys enabled
+- busy timeout
+- bounded retry for transient lock contention
+- all application writes use `BEGIN IMMEDIATE`
+- read-only operations do not open write transactions
 
-Initial MCP-facing operations:
+The `BEGIN IMMEDIATE` rule is based on a reproduced multi-process lock-upgrade failure, not only on theory.
 
-- `memory_search`
-- `memory_search_many`
-- `memory_get`
-- `memory_put`
-- `memory_update`
-- `memory_delete`
+## 12. FTS consistency
 
-### FR-014 Stable internal service contract
+Canonical title/content writes must synchronize FTS transactionally through SQLite triggers.
 
-Adapters MUST call an internal service API rather than executing SQL directly.
+FTS is derived state and may be rebuilt from `memories`.
 
-### FR-015 Schema migrations
+## 13. Backup and health
 
-Schema evolution MUST be versioned. Startup MUST detect incompatible schema versions rather than silently proceeding.
+Backups use SQLite's backup API, not raw copying of only the WAL main file.
 
-## 6. Non-functional requirements
+`membus doctor` verifies:
 
-### NFR-001 Latency
+- schema compatibility
+- WAL
+- foreign keys
+- FTS5
+- SQLite integrity
+- FTS/canonical consistency
+- write readiness
 
-Initial local targets on ordinary developer hardware:
+## 14. Schema evolution
 
-- P50 retrieval < 20 ms
-- P95 retrieval < 50 ms
+Schema changes are versioned.
 
-Targets apply to the local SQLite/FTS retrieval path and exclude remote LLM calls.
+Startup must:
 
-### NFR-002 Durability
+1. create a fresh DB directly at the current schema
+2. migrate older supported schemas
+3. reject a DB newer than the running binary understands
 
-Committed canonical writes MUST survive process restart.
+Current schema version is 2.
 
-### NFR-003 Concurrent clients
+The v1 -> v2 migration intentionally removed unused scoring/lifecycle fields and the redundant `status` column. Non-default removed v1 metadata is retained once in the event ledger for auditability.
 
-Multiple agent processes MUST be able to read concurrently. Write behavior MUST use SQLite WAL mode, explicit transaction boundaries, busy timeout/retry, and `BEGIN IMMEDIATE` for application write transactions. Multi-process stress testing demonstrated that deferred transactions can fail during lock upgrade even for apparently independent inserts.
+## 15. Evaluation
 
-### NFR-004 Inspectability
+The repository maintains an isolated Golden Retrieval Evaluation.
 
-The canonical store MUST remain understandable through ordinary SQLite tooling.
+Required metrics:
 
-### NFR-005 Dependency budget
+- Recall@5
+- Recall@10
+- MRR
+- Precision@5
+- zero-result rate
+- wrong-scope hit rate
+- P50/P95 latency
 
-The V1 core SHOULD have no mandatory runtime dependency beyond Python's standard library where feasible. Adapter-specific dependencies MAY be optional extras.
+The golden set is a regression baseline and should become harder as real misses are observed.
 
-### NFR-006 Portability
+## 16. Evolution gates
 
-The V1 data store MUST be movable as ordinary files and usable without a hosted control plane.
+Add query rewrite when lexical misses are regularly recovered by reformulation.
 
-### NFR-007 Testability
+Add a reranker when relevant memories are usually in the candidate set but rank too low.
 
-Storage, ranking, scope resolution, migrations, and service operations MUST be testable without running an LLM.
+Add embeddings only when lexical + alias + query reformulation still misses materially relevant memories.
 
-## 7. Explicit V1 non-goals
+Add temporal validity/supersession only when stale/conflicting facts become a measured problem.
 
-V1 will NOT require:
+Add graph traversal only when multi-hop relationship questions recur.
 
-- embeddings
-- vector database
-- HNSW
-- knowledge graph database
-- LLM query rewriting
-- LLM reranking
-- automatic conversation ingestion
-- automatic memory extraction
-- autonomous memory consolidation/reflection
-- multi-user tenancy
-- distributed consensus
-- cross-machine live replication
-- hosted service
-- task manager / kanban / agent debate framework
+Add ACL/identity only when different human users or clients need different access.
 
-These may be introduced later only against measured needs.
+Add automatic extraction only when explicit durable writes become a measured maintenance bottleneck.
 
-## 8. Safety and trust requirements
+Add distributed/vector-database infrastructure only when SQLite + derived side indexes hit a demonstrated capacity or availability limit.
 
-### SR-001 External content is not automatically durable memory
+## 17. V1 acceptance criteria
 
-Web pages, repository text, email, issues, documents, and tool output MUST NOT become permanent memory solely because the content asks to be remembered.
+V1 is acceptable when:
 
-### SR-002 Explicit provenance
-
-Automatically proposed future memories MUST identify their originating source.
-
-### SR-003 Trust is distinct from relevance
-
-A high text match from a low-trust source must not be treated as equivalent to a canonical configuration or explicit user rule.
-
-### SR-004 Deletion semantics
-
-Adapters MUST distinguish logical deletion from physical maintenance deletion.
-
-## 9. Evolution gates
-
-A feature is introduced only when a real failure mode crosses a useful threshold.
-
-### Gate G1: Query rewrite
-
-Add query rewrite/multi-query intelligence when lexical misses are frequently recoverable by deterministic or LLM reformulation.
-
-### Gate G2: Reranker
-
-Add a more expensive reranker when the correct memory is commonly in Top-20/Top-50 but not Top-5.
-
-### Gate G3: Embeddings
-
-Add a vector side index only when an evaluation set proves lexical + alias + query rewrite recall is insufficient.
-
-### Gate G4: Temporal lifecycle
-
-Add canonical/superseded/conflict mechanics when stale or contradictory memories become a material source of errors.
-
-### Gate G5: Entity graph
-
-Add graph traversal when answers regularly require multi-hop relationships rather than a single memory.
-
-### Gate G6: ACL/gateway
-
-Add strong client identity/ACL once different clients require materially different namespaces or permissions.
-
-### Gate G7: Automatic extraction
-
-Add autonomous memory candidates only after explicit write workflows are stable and memory pollution can be measured.
-
-### Gate G8: Vector database/distributed architecture
-
-Only consider this when a local side index is a demonstrated capacity, concurrency, or availability bottleneck.
-
-## 10. V1 acceptance criteria
-
-V1 is complete when all of the following are true:
-
-1. A fresh database can be initialized and migrated.
-2. A memory can be created, retrieved, updated, logically deleted, and audited.
-3. FTS search returns exact identifiers and natural technical terms with stable ranking.
-4. Scope filtering prevents an obviously wrong project/repo memory from outranking an applicable one.
-5. Search can return score explanations.
-6. Batch search performs multiple lexical queries without requiring multiple adapter round-trips.
-7. Two independent processes can read the same WAL database; write contention is handled without corruption.
-8. A consistent backup can be created and restored.
-9. The core test suite runs without network access or model credentials.
-10. MCP is only an adapter and can be replaced without migrating canonical data.
+1. fresh and legacy databases initialize/migrate safely
+2. CRUD + logical delete + event audit work
+3. exact identifiers and technical terms retrieve reliably
+4. wrong project/repo memories are excluded
+5. score explanations are reproducible
+6. multi-query retrieval works without model calls
+7. concurrent readers and multi-process writers work without corruption
+8. backup/restore works under WAL
+9. core tests run without network/model credentials
+10. MCP remains an adapter over the same core used by CLI and future transports
