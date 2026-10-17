@@ -1,104 +1,79 @@
 # MemBus Architecture
 
-Status: implementation baseline
+Status: development baseline
 
-## 1. Thesis
-
-MemBus is a user-owned memory layer. Agent products are replaceable clients.
+## 1. Core
 
 ```text
 Claude Code / Codex / Cursor / ChatGPT
                  │
              MCP / CLI
                  ▼
-             adapters
-                 │
-                 ▼
             MemoryService
-          ┌──────┴──────┐
-          │             │
-      repository     retrieval
-          │             │
-          └──────┬──────┘
-                 ▼
-              SQLite
                  │
                  ▼
-                FTS5
+             SQLiteStore
+             ┌───┼────┐
+             │   │    │
+        memories aliases FTS5
 ```
 
-SQLite owns canonical memory. FTS is derived. Adapters do not own data.
+SQLite owns canonical memory. MCP and FTS are replaceable edges.
 
-## 2. Invariants
-
-1. The core works without an LLM, embedding model, network, or API key.
-2. Exact lexical evidence can enter retrieval independently.
-3. Known scope mismatches are excluded.
-4. Local MCP and ChatGPT through Secure MCP Tunnel use the same semantics.
-5. New subsystems require measured evidence.
-
-## 3. Storage
-
-Current database state is intentionally small:
-
-```text
-memory.db
-├── memories
-├── aliases
-└── memory_fts
-```
-
-The canonical memory row contains:
+## 2. Canonical data
 
 ```text
 id
 title
 content
 memory_type
-
-scope
 workspace
 project
 repo
 branch
-
 source_type
 source_ref
-
 created_at
 updated_at
-deleted_at
 ```
 
-There is no schema-version table or migration layer yet because MemBus has not been deployed. During development, schema changes may require recreating local/test databases. Versioning is introduced before the first compatibility commitment, not before.
+Context specificity is implicit:
 
-## 4. Read path
+```text
+branch set     -> branch-specific
+repo set       -> repo-specific
+project set    -> project-specific
+workspace set  -> workspace-specific
+none set       -> global
+```
+
+A branch requires a repo. No separate `scope` column or enum exists.
+
+## 3. Retrieval
 
 ```text
 query
-  ├─ exact full-query substring
-  └─ tokenize -> aliases -> FTS5
+  ├── exact substring
+  └── tokenize -> aliases -> FTS5
           │
           ▼
-     candidate union
+context mismatch exclusion
           │
           ▼
-     scope eligibility
+exact matches first
+then FTS BM25 order
           │
           ▼
-lexical relevance only
-          │
-          ▼
-        Top-K
+Top-K
 ```
 
-`search_many` runs several formulations, unions memory IDs, keeps the best score per memory, and sorts once.
+A memory is excluded only when both the memory and the request provide a context dimension and their values differ.
 
-## 5. Write path
+There is no numeric score, reranking layer, scope bonus, recency bonus, title boost, or multi-query fusion.
+
+## 4. Writes
 
 ```text
-request
-  ↓
 validate
   ↓
 BEGIN IMMEDIATE
@@ -110,29 +85,25 @@ FTS trigger
 commit
 ```
 
-Logical delete only sets `deleted_at`.
+Delete is physical. The FTS delete trigger removes the corresponding derived row.
 
-All application writes use `BEGIN IMMEDIATE`. This remains because multi-process testing reproduced deferred-transaction lock-upgrade failures.
+## 5. Storage boundary
 
-## 6. Scope
+`SQLiteStore` owns:
 
-Supported scopes:
+- connections
+- WAL initialization
+- transactions/retry
+- backup
+- CRUD
+- aliases
+- exact retrieval
+- FTS retrieval
+- context filtering
 
-```text
-global
-workspace
-project
-repo
-branch
-```
+There is no separate Database or Repository abstraction because there is no second persistence backend.
 
-Known workspace/project/repo/branch mismatches are ineligible.
-
-Scope is only an eligibility boundary; it does not add a ranking bonus.
-
-## 7. Operations
-
-Stable service/MCP operations:
+## 6. Operations
 
 ```text
 put
@@ -140,47 +111,27 @@ get
 update
 delete
 search
-search_many
 ```
 
-Current extra operational capabilities:
+Current operational support:
 
-- deterministic aliases
-- SQLite backup API
-- `membus doctor`
-- isolated Golden Retrieval Evaluation
-- WAL + multi-process writer stress coverage
-- Secure MCP Tunnel deployment using the same stdio MCP server
+- SQLite backup
+- doctor
+- Golden Retrieval Evaluation
+- multi-process writer stress coverage
+- Secure MCP Tunnel through the same stdio MCP server
 
-## 8. Deferred complexity
+## 7. Deferred complexity
 
-Not in the current architecture:
+Not present until evidence requires it:
 
-- schema migration/version compatibility
-- mutation event ledger
-- runtime retrieval logging
-- importance/confidence/trust scores
-- temporal validity/supersession
-- embeddings/vector DB
-- graph DB
-- LLM query rewrite/rerank
-- automatic extraction/consolidation
+- compatibility migrations
+- soft delete/history
+- runtime retrieval logs
+- batch/search-many API
+- synthetic relevance scores
+- query rewrite/rerank
+- vector or graph indexes
+- automatic extraction
 - ACL/multi-user gateway
 - distributed storage
-
-Add any of these only when a concrete failure justifies it.
-
-## 9. Evidence gates
-
-A proposal for new complexity should state:
-
-```text
-Observed failure:
-Failure rate:
-Why current design cannot fix it:
-Expected gain:
-Operational cost:
-Rollback path:
-```
-
-The Golden Retrieval Evaluation is the current gate for retrieval changes.
