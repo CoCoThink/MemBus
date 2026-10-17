@@ -1,28 +1,27 @@
 # MemBus V1 Technical Specification
 
-Status: implementation baseline
+Status: development baseline
 
 ## 1. Technology
 
-V1 uses:
-
 - Python 3.11+
-- SQLite with FTS5
-- Python standard-library `sqlite3`
+- SQLite + FTS5
+- standard-library `sqlite3`
 - UTC ISO-8601 timestamps
 - optional MCP dependency outside the core
 
-The core must work without a network connection, API key, embedding model, or LLM.
+No network, model API, embedding library, or hosted service is required by the core.
 
-## 2. Package boundaries
+## 2. Package layout
 
 ```text
 src/membus/
 ├── db.py
-├── migrations.py
 ├── models.py
 ├── repository.py
 ├── schema.sql
+├── doctor.py
+├── evaluation.py
 ├── retrieval/
 │   ├── lexical.py
 │   ├── ranking.py
@@ -33,52 +32,82 @@ src/membus/
     └── mcp_server.py
 ```
 
-Adapters call `MemoryService`. They do not issue SQL.
+There is no migration package before first deployment.
 
-## 3. Canonical schema
-
-Current schema version:
-
-```text
-2
-```
-
-Fresh databases are created directly at schema v2. Existing schema v1 stores are migrated automatically.
-
-### 3.1 memories
-
-The canonical memory row contains only fields with current runtime meaning:
+## 3. Database schema
 
 ```sql
 CREATE TABLE memories (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
-
     memory_type TEXT NOT NULL,
     scope TEXT NOT NULL,
-
     workspace TEXT,
     project TEXT,
     repo TEXT,
     branch TEXT,
-
     source_type TEXT,
     source_ref TEXT,
-
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
 );
+
+CREATE TABLE aliases (
+    alias TEXT PRIMARY KEY,
+    canonical TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    memory_id UNINDEXED,
+    title,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 ```
 
-There is no separate active/deleted status. A memory is active when:
+Triggers synchronize `memory_fts` after canonical insert, title/content update, and physical delete.
+
+A memory is active when:
 
 ```sql
 deleted_at IS NULL
 ```
 
-V1 deliberately does not store generic `importance`, `confidence`, `trust`, `valid_from`, `valid_until`, or `supersedes_id` fields. Those concepts are added only when their semantics are implemented and measured.
+No event table, retrieval-log table, schema-version table, or speculative lifecycle/scoring columns exist.
+
+## 4. Initialization
+
+`Database.initialize()`:
+
+1. opens/creates the SQLite file
+2. enables WAL
+3. executes the idempotent current `schema.sql`
+
+During pre-deployment development, incompatible schema changes may require deleting/recreating local databases. Compatibility machinery is added only before a real compatibility commitment.
+
+## 5. Transactions
+
+Connections configure:
+
+```text
+busy_timeout = 5000 ms
+synchronous = NORMAL
+```
+
+Read-only operations use ordinary connections.
+
+Every application write uses:
+
+```sql
+BEGIN IMMEDIATE;
+```
+
+with bounded retry for transient busy/locked errors.
+
+## 6. Domain validation
 
 Supported memory types:
 
@@ -94,120 +123,6 @@ note
 
 Supported scopes:
 
-```text
-global
-workspace
-project
-repo
-branch
-```
-
-### 3.2 aliases
-
-```sql
-CREATE TABLE aliases (
-    alias TEXT PRIMARY KEY,
-    canonical TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-```
-
-Aliases provide deterministic lexical expansion such as `pg -> postgresql`.
-
-### 3.3 memory_events
-
-```sql
-CREATE TABLE memory_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    payload_json TEXT,
-    actor TEXT,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(memory_id) REFERENCES memories(id)
-);
-```
-
-Normal event types are:
-
-```text
-created
-updated
-deleted
-```
-
-Create/delete events do not duplicate memory state in their payload. Update events record only changed fields.
-
-### 3.4 retrieval_logs
-
-```sql
-CREATE TABLE retrieval_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    query TEXT,
-    scope_json TEXT,
-    candidate_count INTEGER NOT NULL,
-    result_ids_json TEXT NOT NULL,
-    latency_ms REAL NOT NULL,
-    created_at TEXT NOT NULL
-);
-```
-
-There is no generic debug blob. Retrieval logging modes are `off`, `metadata-only`, and `full`.
-
-### 3.5 FTS
-
-```sql
-CREATE VIRTUAL TABLE memory_fts USING fts5(
-    memory_id UNINDEXED,
-    title,
-    content,
-    tokenize = 'unicode61 remove_diacritics 2'
-);
-```
-
-SQLite triggers synchronize FTS on canonical insert, title/content update, and physical delete.
-
-Logical deletion leaves the FTS row present; search excludes deleted canonical rows by joining against `deleted_at IS NULL`.
-
-## 4. Index policy
-
-V1 keeps only the index currently used for event lookup:
-
-```sql
-CREATE INDEX idx_events_memory_id
-ON memory_events(memory_id);
-```
-
-Scope/project/repo/retrieval-log indexes are not pre-created because current queries do not rely on them. Add indexes only after query plans or measurements justify them.
-
-## 5. Connection and transactions
-
-Connections enable:
-
-```text
-foreign_keys = ON
-busy_timeout = 5000 ms
-synchronous = NORMAL
-```
-
-The database is initialized in WAL mode.
-
-Read-only operations use ordinary connections.
-
-All application writes use:
-
-```sql
-BEGIN IMMEDIATE;
-```
-
-This was chosen after multi-process testing reproduced lock-upgrade failures with deferred transactions. SQLite permits one writer anyway; reserving the writer slot at transaction start makes contention predictable for busy timeout/retry.
-
-## 6. Domain validation
-
-`content` must contain non-whitespace text.
-
-Scope requirements:
-
 | scope | required context |
 |---|---|
 | global | none |
@@ -216,62 +131,49 @@ Scope requirements:
 | repo | repo |
 | branch | repo + branch |
 
-Optional parent context may be stored for disambiguation.
+`content` must contain non-whitespace text.
 
-Memory IDs are generated by the core:
+IDs are generated as:
 
 ```text
 mem_<uuid4hex>
 ```
 
-## 7. Read path
+## 7. Retrieval
 
 ```text
 query
-  ↓
-normalize
-  ├─ exact full-query substring candidate path
-  └─ tokenize + alias expansion + FTS5 candidate path
-  ↓
-candidate union
-  ↓
-scope eligibility
-  ↓
-lexical + scope ranking
-  ↓
-Top-K
+  ├─ exact full-query substring
+  └─ safe tokens -> aliases -> FTS5
+          │
+          ▼
+     candidate union
+          │
+          ▼
+     scope eligibility
+          │
+          ▼
+     lexical + scope
+          │
+          ▼
+        Top-K
 ```
 
-No model call is required.
+Exact matches receive lexical score `1.0`.
 
-### Exact candidates
+FTS candidates are ordered by SQLite BM25 and converted to a bounded rank-based lexical score.
 
-The complete normalized query is checked against title/content. This protects literal evidence such as:
+Final ranking:
 
-- issue IDs
-- paths
-- symbols
-- error codes
-- configuration keys
+```text
+score =
+    0.80 * lexical
+  + 0.20 * scope
+```
 
-### FTS candidates
+When `explain=true`, signals include lexical score, scope score/reason, exact-match state, raw BM25 where applicable, and alias expansion where applicable.
 
-Safe lexical tokens are converted to a quoted OR expression before `MATCH`. Raw user FTS syntax is never passed through.
-
-The repository returns raw BM25 for explanation. Ranking uses deterministic candidate rank normalization.
-
-## 8. Scope
-
-Known parent mismatches exclude a memory.
-
-Examples:
-
-- workspace mismatch excludes a project memory
-- project mismatch excludes repo/branch memories
-- repo mismatch excludes repo/branch memories
-- branch mismatch excludes branch memories
-
-Applicable scope affinity values remain:
+## 8. Scope affinity
 
 ```text
 global     0.40
@@ -281,82 +183,33 @@ repo       0.90
 branch     1.00
 ```
 
-When required context is missing, a scoped memory can remain searchable with a modest affinity instead of being silently discarded.
+Known context mismatches are excluded rather than merely down-ranked.
 
-## 9. Ranking
+## 9. Multi-query
 
-V1 uses only signals with current explicit semantics:
+`search_many`:
 
-```text
-score =
-    0.80 * lexical
-  + 0.20 * scope
-```
+1. runs each query
+2. unions results by memory ID
+3. keeps the best score per memory
+4. sorts once
+5. returns Top-K
 
-Exact full-query matches receive lexical score `1.0`.
+No model call or extra fusion bonus is used.
 
-When `explain=true`, results expose:
+## 10. Write semantics
 
-```json
-{
-  "score": 0.96,
-  "signals": {
-    "lexical": 1.0,
-    "scope": 0.8,
-    "exact_match": true,
-    "scope_reason": "project match",
-    "raw_bm25": -4.2
-  }
-}
-```
+`put` creates a canonical row.
 
-No recency decay or subjective importance/trust score is applied. Old-but-valid canonical knowledge should not be demoted without evidence that doing so improves retrieval quality.
+`update` validates the resulting full memory shape and updates mutable fields.
 
-## 10. Multi-query search
+`delete` sets `deleted_at` and `updated_at`.
 
-`search_many` executes several lexical formulations in one adapter round trip.
+`get(..., include_deleted=True)` can inspect a logically deleted memory by known ID.
 
-Behavior:
+Search never returns deleted memories.
 
-1. run each query independently
-2. union candidates by memory ID
-3. keep the best score seen for each memory
-4. sort once
-5. return Top-K
-
-There is no additional multi-query bonus.
-
-## 11. Write path
-
-```text
-request
-  ↓
-validate
-  ↓
-BEGIN IMMEDIATE
-  ├─ canonical mutation
-  ├─ FTS trigger
-  └─ memory event
-  ↓
-commit
-```
-
-Logical delete sets `deleted_at` and `updated_at`; it does not physically delete the canonical row.
-
-## 12. Service and MCP contract
-
-Stable service operations:
-
-```text
-put
-get
-update
-delete
-search
-search_many
-```
-
-The MCP adapter exposes the corresponding six tools:
+## 11. Service / MCP operations
 
 ```text
 memory_put
@@ -367,69 +220,22 @@ memory_search
 memory_search_many
 ```
 
-Example `memory_put`:
+Local clients and ChatGPT via Secure MCP Tunnel use the same tool surface.
 
-```json
-{
-  "title": "Do not edit generated client",
-  "content": "generated/client.ts is generated from OpenAPI.",
-  "memory_type": "procedure",
-  "scope": "repo",
-  "workspace": "work",
-  "project": "payment",
-  "repo": "payment-api",
-  "source_type": "user_rule",
-  "source_ref": "conversation"
-}
-```
+## 12. Backup and doctor
 
-Local MCP clients and ChatGPT through Secure MCP Tunnel use this same contract.
-
-## 13. Backup, doctor, and logging
-
-Backups use `sqlite3.Connection.backup()`; copying only the WAL database file is not the supported backup path.
+Backups use `sqlite3.Connection.backup()`.
 
 `membus doctor` checks:
 
-- initialization/schema
-- WAL
-- foreign keys
-- FTS5
+- initialization
+- WAL mode
+- FTS5 MATCH
 - SQLite integrity
-- canonical/FTS row consistency
-- application write readiness
+- canonical/FTS consistency
+- write transaction readiness
 
-Retrieval logging is off by default.
-
-## 14. Schema migration v1 -> v2
-
-Schema v2 is a deliberate contraction.
-
-Removed canonical fields:
-
-```text
-status
-importance
-confidence
-trust
-valid_from
-valid_until
-supersedes_id
-```
-
-`status` is replaced by `deleted_at IS NULL`.
-
-Non-default values from the removed v1 metadata are preserved once in the existing event ledger as:
-
-```text
-schema_v2_removed_metadata
-```
-
-This keeps the active model small without silently discarding previously supplied metadata.
-
-The migration also removes the unused `retrieval_logs.debug_json` column and rebuilds FTS from canonical rows.
-
-## 15. Evaluation gate
+## 13. Evaluation
 
 The isolated Golden Retrieval Evaluation tracks:
 
@@ -439,6 +245,6 @@ The isolated Golden Retrieval Evaluation tracks:
 - Precision@5
 - zero-result rate
 - wrong-scope hit rate
-- latency P50/P95
+- P50/P95 latency
 
-New retrieval complexity must demonstrate benefit against real failures before it becomes part of the default path.
+New retrieval complexity must improve measured failures before entering the default path.
