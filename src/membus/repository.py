@@ -124,7 +124,7 @@ class MemoryRepository:
             SELECT m.*
             FROM memories AS m
             WHERE {' AND '.join(where)}
-            ORDER BY m.updated_at DESC
+            ORDER BY m.id ASC
             LIMIT ?
         """
         params.append(limit)
@@ -147,11 +147,11 @@ class MemoryRepository:
         sql = f"""
             SELECT
                 m.*,
-                bm25(memory_fts, 0.0, 5.0, 1.0) AS raw_bm25
+                bm25(memory_fts) AS raw_bm25
             FROM memory_fts
             JOIN memories AS m ON m.id = memory_fts.memory_id
             WHERE {' AND '.join(where)}
-            ORDER BY raw_bm25 ASC, m.updated_at DESC
+            ORDER BY raw_bm25 ASC, m.id ASC
             LIMIT ?
         """
         params.append(limit)
