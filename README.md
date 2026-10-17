@@ -139,7 +139,7 @@ Run retrieval evaluation:
 membus eval evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
-  --max-wrong-scope-rate 0.0
+  --max-wrong-context-rate 0.0
 ```
 
 Still deliberately absent:
