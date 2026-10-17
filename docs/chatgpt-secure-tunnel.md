@@ -1,581 +1,231 @@
 # ChatGPT Web via Secure MCP Tunnel
 
-Status: proposed deployment/security architecture  
-Goal: expose a private MemBus instance to ChatGPT Web through OpenAI Secure MCP Tunnel without making MemBus publicly reachable.
+Status: simplified deployment design
 
-## 1. Current product constraint
+## 1. Design goal
 
-As of the current ChatGPT product documentation, full custom MCP server support on ChatGPT Web is available to Business and Enterprise/Edu workspaces. Pro can connect custom MCP servers with read/fetch permissions; Plus is not currently listed as supporting custom MCP server connections.
+MemBus should not have a separate ChatGPT memory system and local memory system.
 
-This is a product-surface constraint, not a MemBus or Secure MCP Tunnel protocol constraint. MemBus should still be designed so the same private tunnel target can be used by supported ChatGPT workspaces, Codex, or the Responses API.
+There is only one MCP server: `membus-mcp`, one `MemoryService`, and one canonical SQLite store.
 
-## 2. Recommended topology
+The difference between local agents and ChatGPT Web is only how they reach the same MCP server.
 
-For a personal/single-user deployment, keep the canonical store private and keep stdio as the first tunnel binding:
+## 2. Topology
+
+### Local agent
+
+```text
+Claude Code / Codex / Cursor
+            │
+           stdio
+            │
+            ▼
+        membus-mcp
+            │
+            ▼
+       MemoryService
+            │
+            ▼
+        SQLite + FTS5
+```
+
+### ChatGPT Web
 
 ```text
 ChatGPT Web
-    │
-    │ custom MCP app
-    ▼
-OpenAI-hosted tunnel endpoint
-    │
-    │ outbound-only tunnel transport
-    ▼
+     │
+Secure MCP Tunnel
+     │
 tunnel-client
-    │
-    │ stdio child process
-    ▼
-membus-chatgpt-mcp
-    │
-    ▼
+     │
+    stdio
+     │
+     ▼
+ membus-mcp
+     │
+     ▼
 MemoryService
-    │
-    ▼
-SQLite canonical store
+     │
+     ▼
+SQLite + FTS5
 ```
 
-The tunnel client authenticates to OpenAI. MemBus itself stays on the local machine and has no public listener.
+The same executable, same tool definitions, same database, same retrieval logic, and same write semantics are used in both cases.
 
-The existing generic `membus-mcp` tool surface should not be used unchanged for remote ChatGPT access. Add a dedicated restricted adapter/profile.
+Secure MCP Tunnel is only a transport bridge.
 
-## 3. Why not move directly to HTTP
+## 3. Do not create a ChatGPT-specific core
 
-Secure MCP Tunnel supports both:
+For the first usable version, do not introduce:
 
-- stdio child-process MCP
-- private Streamable HTTP MCP
+- a separate ChatGPT MCP adapter
+- separate remote/local tool names
+- visibility fields
+- remote-only memory types
+- candidate-only writes
+- ACL
+- OAuth identity inside MemBus
+- separate ChatGPT ranking
+- separate ChatGPT schema
 
-Stdio is the lowest-complexity choice for one private user:
+These features should only be added later if a concrete problem requires them.
 
-- no local TCP listener
-- no local TLS/auth stack
-- tunnel-client owns the child lifecycle
-- the SQLite store remains local
+## 4. Keep the same MCP tool surface
 
-However, stdio has an important limitation: it has no HTTP-header hop. Connector-forwarded Authorization headers and static MCP headers cannot be delivered to a stdio child.
-
-Therefore:
-
-### Use stdio when
-
-- one user owns the MemBus instance
-- one ChatGPT connection/tunnel is trusted as that user
-- per-user OAuth identity is not needed
-- one active tunnel-client instance per tunnel ID is acceptable
-
-### Move to private Streamable HTTP when
-
-- several ChatGPT users share one MemBus deployment
-- MemBus must distinguish caller identity
-- OAuth bearer tokens must reach MemBus
-- static local credentials or MCP-side mTLS are required
-- MemBus should run independently of tunnel-client child lifecycle
-- multiple deployment components need to reach the same MCP server
-
-The core MemoryService and SQLite schema should not depend on this transport decision.
-
-## 4. Add a ChatGPT-specific adapter policy
-
-Create a separate adapter module, for example:
+The current six tools remain the canonical V1 MCP contract:
 
 ```text
-src/membus/adapters/
-├── mcp_server.py
-├── chatgpt_mcp.py
-└── policy.py
-```
-
-Do not expose every core field just because the core supports it.
-
-The current generic MCP adapter allows callers to provide fields such as:
-
-- `actor`
-- `trust`
-- `confidence`
-- arbitrary update `changes`
-
-That is too permissive for a remote LLM-facing adapter.
-
-### Remote adapter rules
-
-The ChatGPT adapter should:
-
-- set `actor` server-side, e.g. `chatgpt-web`
-- never allow the model to impersonate another actor
-- assign or clamp `trust` server-side
-- clamp allowed `importance`
-- restrict writeable scopes
-- disallow direct mutation of provenance/security fields
-- disable physical deletion
-- optionally disable logical deletion by default
-- record the remote adapter/profile as provenance
-
-The model may suggest metadata. It should not be authoritative for trust or identity.
-
-## 5. Introduce access visibility distinct from scope
-
-Current MemBus scope answers:
-
-> Which project/workspace does this memory apply to?
-
-It does not answer:
-
-> Which clients are allowed to export this memory outside the local trust boundary?
-
-Secure MCP Tunnel prevents a public inbound endpoint, but MCP requests, tool arguments, and responses still traverse OpenAI product/runtime and tunnel infrastructure before the final local hop.
-
-Therefore MemBus needs a separate visibility/access dimension.
-
-Recommended initial model:
-
-```text
-visibility:
-  local_only
-  trusted_agents
-  chatgpt
-```
-
-or a more general audience table later.
-
-Example:
-
-```yaml
-scope: project
-project: payment
-visibility: chatgpt
-```
-
-A memory with:
-
-```yaml
-visibility: local_only
-```
-
-must never be returned by the ChatGPT adapter, even when it is textually relevant.
-
-This filter belongs before ranking, not as a weak score.
-
-## 6. Use a restricted remote tool surface
-
-Recommended ChatGPT v1 tool profile:
-
-```text
-memory_search
+memory_put
 memory_get
-memory_context
-memory_put_candidate
+memory_update
+memory_delete
+memory_search
+memory_search_many
 ```
 
-Optional later:
+ChatGPT Web and local coding agents see the same tools.
 
-```text
-memory_update_content
-memory_supersede
-```
+Do not add a second set such as `chatgpt_memory_search`, `remote_memory_put`, or `memory_put_candidate` unless real use demonstrates different semantics are necessary.
 
-Do not remotely expose a generic arbitrary patch tool.
+## 5. Keep transport metadata outside the domain model
 
-### Read tools
+Tunnel credentials and connection details are deployment configuration, not memory data.
 
-#### memory_search
+Do not add `tunnel_id`, OpenAI API keys, ChatGPT sessions, or OAuth tokens to the canonical memory schema.
 
-Return:
-
-- ID
-- title
-- concise snippet
-- type
-- scope
-- score
-- provenance summary
-
-Do not return the full content of every Top-K hit by default.
-
-#### memory_get
-
-Fetch one selected full record after search.
-
-This two-step pattern reduces unnecessary data egress.
-
-#### memory_context
-
-A higher-level read tool:
-
-```json
-{
-  "task": "explain why settlement cannot run concurrently",
-  "workspace": "work",
-  "project": "payment",
-  "max_memories": 6,
-  "max_chars": 12000
-}
-```
-
-The server performs:
-
-```text
-lexical retrieval
-→ dedup
-→ scope/visibility filter
-→ rerank
-→ context packing
-```
-
-This reduces repeated ChatGPT tool round-trips.
-
-### Write tools
-
-#### memory_put_candidate
-
-Remote ChatGPT writes should initially create a candidate or low-trust memory, not silently create a high-trust canonical rule.
-
-Possible policy:
-
-```text
-ChatGPT write
-  ↓
-candidate / low-trust active record
-  ↓
-explicit user review or later promotion
-```
-
-The existing local CLI/MCP can retain full-authority explicit writes.
-
-## 7. Make remote writes idempotent
-
-A network/tunnel/product call may be retried after a timeout or connection failure.
-
-The current `memory_put` always generates a new UUID. If the same tool call is retried, MemBus can create duplicate memories.
-
-Add an idempotency boundary before making remote writes production-worthy.
-
-Recommended request field:
-
-```text
-idempotency_key
-```
-
-or server-generated tool-call/request identity when available.
-
-Persistence options:
-
-```text
-request_dedup
-─────────────
-client
-idempotency_key
-operation
-result_memory_id
-created_at
-
-UNIQUE(client, idempotency_key)
-```
-
-The transaction becomes:
-
-```text
-BEGIN IMMEDIATE
-  lookup request key
-  if seen → return original result
-  otherwise perform mutation
-  record request/result
-COMMIT
-```
-
-This is more important once MemBus crosses a network boundary.
-
-## 8. Freeze and version the ChatGPT MCP contract
-
-ChatGPT workspace apps can use a reviewed/frozen snapshot of MCP tools. Tool definition changes are not necessarily applied automatically and may require an admin refresh/review.
-
-Therefore the remote tool schema should be much more stable than internal Python APIs.
-
-Recommended rules:
-
-- introduce `MCP_CONTRACT_VERSION = 1`
-- prefer adding optional fields over changing required fields
-- do not rename stable tools casually
-- do not reuse a field with a new semantic meaning
-- version incompatible tool surfaces explicitly
-- add contract tests that snapshot tool names/input schemas
-
-For example:
-
-```text
-memory_search        # stable v1
-memory_get           # stable v1
-memory_context       # stable v1
-memory_put_candidate # stable v1
-```
-
-If a future breaking design is required, prefer a new explicit tool rather than silently changing the old one.
-
-## 9. Separate remote identity from model-supplied metadata
-
-For the stdio tunnel profile, the backend cannot receive connector HTTP Authorization headers because stdio has no HTTP-header hop.
-
-Treat the whole tunnel binding as one configured identity:
-
-```text
-MEMBUS_CLIENT_ID=chatgpt-personal
-MEMBUS_ACTOR=chatgpt-web
-MEMBUS_POLICY_PROFILE=chatgpt-personal
-```
-
-These values are environment/configuration, not tool arguments.
-
-If multiple users later share the service, switch to private Streamable HTTP plus an authentication layer. Secure MCP Tunnel can forward connector Authorization headers to an HTTP MCP origin.
-
-## 10. Add remote policy profiles
-
-Recommended profiles:
-
-### local-full
-
-For local trusted tools:
-
-```text
-read all allowed local namespaces
-write active/canonical memory
-update
-logical delete
-administrative metadata
-```
-
-### chatgpt-readonly
-
-```text
-search/get/context
-visibility <= chatgpt
-no writes
-```
-
-### chatgpt-personal
-
-```text
-search/get/context
-visibility <= chatgpt
-put_candidate
-no trust escalation
-no actor override
-no arbitrary update
-no delete by default
-```
-
-This policy should live above MemoryService or in an adapter policy layer, not in SQLite-specific code.
-
-## 11. Add output and context budgets
-
-A central personal memory store may contain large records. Do not let an MCP caller accidentally export tens of thousands of characters per search.
-
-Server-enforced limits should include:
-
-```text
-max_search_results
-max_snippet_chars
-max_get_chars
-max_context_memories
-max_context_chars
-```
-
-Recommended starting values:
-
-```text
-search results: 10
-snippet:        500 chars
-context:        6 memories
-context total:  12k chars
-```
-
-The caller may request a lower budget but must not exceed the server's configured ceiling.
-
-## 12. Keep long maintenance work out of synchronous MCP
-
-Secure MCP Tunnel requests have finite request deadlines and queue limits. MemBus currently has millisecond-scale search, which is ideal.
-
-Do not expose operations such as:
-
-- full import of millions of records
-- complete reindex
-- embedding-model migration
-- database vacuum
-- large export
-
-as synchronous ChatGPT tools.
-
-Keep them in:
-
-```text
-membus CLI
-maintenance daemon
-offline job
-```
-
-Remote MCP tools should stay bounded and quick.
-
-## 13. Deployment configuration
-
-For a first personal stdio deployment:
+The tunnel runtime should be configured independently from MemBus.
 
 ```text
 tunnel-client
-  --tunnel-id <tunnel_id>
-  --mcp-command "membus-chatgpt-mcp"
+     │
+     └── launches: membus-mcp
 ```
 
-Keep the tunnel runtime API key outside the MemBus configuration.
+The canonical database remains `~/.membus/memory.db` or the path configured with `MEMBUS_DB`.
 
-Use environment or file-backed secrets for tunnel-client.
+## 6. Optional client label only
 
-Suggested process boundary:
-
-```text
-systemd / launchd / supervisor
-├── tunnel-client
-│     └── child: membus-chatgpt-mcp
-└── ~/.membus/memory.db
-```
-
-Do not check tunnel credentials into the MemBus repository.
-
-## 14. Operational readiness
-
-Add a MemBus-side doctor command:
+If useful for auditing, MemBus may accept a process-level diagnostic label such as:
 
 ```bash
-membus doctor
+MEMBUS_CLIENT=chatgpt-web
 ```
 
-It should verify:
+or:
 
-- database opens
-- schema version supported
+```bash
+MEMBUS_CLIENT=claude-code
+```
+
+This is diagnostic metadata only. In V1 it must not change retrieval, permissions, trust, scope, or write semantics.
+
+## 7. Generic improvements that help every MCP client
+
+These improvements are reasonable, but they should be implemented once for all clients rather than as ChatGPT-specific behavior.
+
+### Stable MCP contract
+
+Keep the six tool names and parameter meanings stable. This benefits every MCP client.
+
+### Idempotent writes
+
+If duplicate writes caused by retries become a real problem, add a generic optional `idempotency_key` to normal MemBus write operations.
+
+Do not build a remote-only dedup subsystem.
+
+### memory_context
+
+A future high-level `memory_context` tool may be useful for all agents. It should accept task/project/repo context and return a compact group of relevant memories.
+
+This is a retrieval convenience feature, not a ChatGPT security feature.
+
+### doctor
+
+Add `membus doctor` for application/data checks:
+
+- database readable
+- schema supported
 - WAL enabled
 - FTS5 available
 - integrity check
-- canonical/FTS row consistency
-- writable transaction check
-- backup destination test when requested
-- remote policy profile loads
+- FTS consistency
+- basic write transaction
 
-Tunnel readiness remains the responsibility of `tunnel-client doctor`, `/healthz`, `/readyz`, and its local admin UI.
-
-The two health layers should remain separate:
+The tunnel has its own diagnostics.
 
 ```text
-MemBus doctor
-  = application/data health
+membus doctor
+    = MemBus/data health
 
 tunnel-client doctor
-  = transport/control-plane health
+    = tunnel/connectivity health
 ```
 
-## 15. Proposed next schema evolution
+## 8. Deployment model
 
-Do not make transport fields part of the core memory identity.
+For the personal single-user case, stdio is enough.
 
-A small schema v2 should focus on remote access semantics:
+Run the same server used locally through the tunnel client:
 
 ```text
-memories
-+ visibility
-
-request_dedup
-+ client
-+ idempotency_key
-+ operation
-+ result_memory_id
-+ created_at
+tunnel-client
+    │
+    └── stdio -> membus-mcp
 ```
 
-Optionally add structured invocation audit fields later:
+No Streamable HTTP server is required.
+
+No local TCP port is required.
+
+No extra MemBus authentication layer is required for the initial personal deployment.
+
+## 9. When should the design become more complicated?
+
+Only introduce more machinery when the use case actually changes.
+
+### Multiple human users share one MemBus
+
+Then consider caller identity, ACL, namespaces, HTTP MCP, and OAuth.
+
+### Some memories must not be available to some clients
+
+Then consider visibility/access policy.
+
+### Automatic agents write untrusted memories
+
+Then consider candidate memories and promotion workflow.
+
+### Duplicate writes occur because of retries
+
+Then add idempotency keys.
+
+These are future problem-driven changes, not prerequisites for ChatGPT Web access.
+
+## 10. Recommended current architecture
 
 ```text
-memory_events
-+ client_id
-+ request_id
-+ transport
+                     MemBus Clients
+                ┌─────────┴─────────┐
+                │                   │
+          Local MCP client      ChatGPT Web
+                │                   │
+              stdio          Secure MCP Tunnel
+                │                   │
+                └─────────┬─────────┘
+                          ▼
+                      membus-mcp
+                          │
+                          ▼
+                    MemoryService
+                          │
+               ┌──────────┴──────────┐
+               │                     │
+             SQLite                 FTS5
+          canonical store       derived index
 ```
 
-Do not store OpenAI runtime API keys, OAuth access tokens, or tunnel credentials in SQLite.
+The rule is simple:
 
-## 16. Recommended implementation phases
+> ChatGPT Web is just another MCP client.
 
-### Phase A — personal ChatGPT tunnel
-
-Keep stdio.
-
-Implement:
-
-- dedicated ChatGPT adapter
-- fixed server-side actor
-- remote policy profile
-- visibility filter
-- bounded outputs
-- read tools
-- candidate-only writes
-- idempotency
-- contract snapshot tests
-
-### Phase B — persistent private HTTP service
-
-Only when needed.
-
-Implement:
-
-- Streamable HTTP adapter on loopback/private network
-- forwarded Authorization handling
-- caller identity mapping
-- ACL
-- OAuth or trusted gateway auth
-- independent MemBus daemon lifecycle
-
-### Phase C — shared workspace memory
-
-Only when several human users share one store.
-
-Implement:
-
-- user/client principals
-- per-namespace ACL
-- visibility/audience policies
-- per-user audit
-- least-privilege write permissions
-
-## 17. Architecture target
-
-```text
-                         ChatGPT Web
-                              │
-                       custom MCP app
-                              │
-                    OpenAI Secure Tunnel
-                              │
-                      outbound-only path
-                              │
-                       tunnel-client
-                              │
-             ┌────────────────┴────────────────┐
-             │                                 │
-      personal: stdio                  shared: HTTP
-             │                                 │
-             ▼                                 ▼
-   ChatGPT Restricted Adapter        Authenticated MCP Adapter
-             │                                 │
-             └────────────────┬────────────────┘
-                              ▼
-                         Policy Layer
-                 visibility / ACL / budgets
-                              │
-                              ▼
-                         MemoryService
-                              │
-                              ▼
-                    SQLite Canonical Store
-                    + FTS derived index
-```
-
-The critical principle remains unchanged:
-
-> Secure MCP Tunnel is a transport boundary. It must not become the owner of MemBus data, identity, trust semantics, or lifecycle.
+Secure MCP Tunnel changes connectivity, not MemBus semantics.
