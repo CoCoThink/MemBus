@@ -2,25 +2,25 @@
 
 Status: development baseline
 
-## 1. Core
+## Core
 
 ```text
 Claude Code / Codex / Cursor / ChatGPT
                  │
              MCP / CLI
                  ▼
-            MemoryService
+               MemBus
                  │
                  ▼
-             SQLiteStore
-             ┌───┼────┐
-             │   │    │
-        memories aliases FTS5
+              SQLite
+           ┌─────┼─────┐
+           │     │     │
+       memories aliases FTS5
 ```
 
-SQLite owns canonical memory. MCP and FTS are replaceable edges.
+There is one runtime core object. MCP and CLI are adapters over the same `MemBus`.
 
-## 2. Canonical data
+## Canonical memory
 
 ```text
 id
@@ -31,10 +31,6 @@ workspace
 project
 repo
 branch
-source_type
-source_ref
-created_at
-updated_at
 ```
 
 Context specificity is implicit:
@@ -47,14 +43,14 @@ workspace set  -> workspace-specific
 none set       -> global
 ```
 
-A branch requires a repo. No separate `scope` column or enum exists.
+A branch requires a repo.
 
-## 3. Retrieval
+## Retrieval
 
 ```text
 query
-  ├── exact substring
-  └── tokenize -> aliases -> FTS5
+  ├─ exact substring
+  └─ tokenize -> aliases -> FTS5
           │
           ▼
 context mismatch exclusion
@@ -67,69 +63,52 @@ then FTS BM25 order
 Top-K
 ```
 
-A memory is excluded only when both the memory and the request provide a context dimension and their values differ.
+A row is excluded only when both sides provide a context dimension and values differ.
 
-There is no numeric score, reranking layer, scope bonus, recency bonus, title boost, or multi-query fusion.
+There is no ranking layer, numeric score, scope bonus, recency signal, title boost, explain mode, or multi-query fusion.
 
-## 4. Writes
+## Writes
 
 ```text
 validate
   ↓
 BEGIN IMMEDIATE
   ↓
-canonical mutation
+SQLite mutation
   ↓
 FTS trigger
   ↓
 commit
 ```
 
-Delete is physical. The FTS delete trigger removes the corresponding derived row.
+Delete is physical.
 
-## 5. Storage boundary
+## Runtime responsibilities
 
-`SQLiteStore` owns:
+`MemBus` owns:
 
-- connections
-- WAL initialization
-- transactions/retry
-- backup
+- schema initialization
+- SQLite connections
+- WAL
+- write transactions and retry
 - CRUD
 - aliases
 - exact retrieval
 - FTS retrieval
 - context filtering
+- backup
 
-There is no separate Database or Repository abstraction because there is no second persistence backend.
+There is no Database, Repository, Store interface, Service layer, or separate retrieval subsystem.
 
-## 6. Operations
+## Deferred complexity
 
-```text
-put
-get
-update
-delete
-search
-```
-
-Current operational support:
-
-- SQLite backup
-- doctor
-- Golden Retrieval Evaluation
-- multi-process writer stress coverage
-- Secure MCP Tunnel through the same stdio MCP server
-
-## 7. Deferred complexity
-
-Not present until evidence requires it:
+Add new machinery only for a measured failure:
 
 - compatibility migrations
-- soft delete/history
+- history/soft delete
 - runtime retrieval logs
-- batch/search-many API
-- synthetic relevance scores
+- batch retrieval
+- calibrated ranking
 - query rewrite/rerank
 - vector or graph indexes
 - automatic extraction
