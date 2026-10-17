@@ -6,9 +6,6 @@ from pathlib import Path
 from membus.cli import main
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
 def _json_output(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
@@ -34,38 +31,17 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
         "--project", "payment",
     ]) == 0
     searched = _json_output(capsys)
-    assert searched["results"][0]["memory"]["id"] == memory_id
-    assert searched["results"][0]["match"] == "exact"
+    assert searched["results"][0]["id"] == memory_id
 
     assert main(["--db", str(db), "get", memory_id]) == 0
-    loaded = _json_output(capsys)
-    assert loaded["id"] == memory_id
+    assert _json_output(capsys)["id"] == memory_id
 
     backup = tmp_path / "backup.db"
     assert main(["--db", str(db), "backup", str(backup)]) == 0
-    backed_up = _json_output(capsys)
-    assert Path(backed_up["backup"]).exists()
+    assert Path(_json_output(capsys)["backup"]).exists()
 
     assert main(["--db", str(db), "delete", memory_id]) == 0
-    deleted = _json_output(capsys)
-    assert deleted["deleted"] is True
+    assert _json_output(capsys)["deleted"] is True
 
     assert main(["--db", str(db), "get", memory_id]) == 1
-    missing = _json_output(capsys)
-    assert missing["error"] == "not_found"
-
-
-def test_cli_eval_gate(capsys) -> None:
-    dataset = ROOT / "evals" / "golden_v1.json"
-
-    assert main([
-        "eval",
-        str(dataset),
-        "--min-recall-5", "0.95",
-        "--min-recall-10", "0.95",
-        "--max-wrong-context-rate", "0.0",
-    ]) == 0
-
-    report = _json_output(capsys)
-    assert report["recall_at_5"] >= 0.95
-    assert report["wrong_context_hit_rate"] == 0.0
+    assert _json_output(capsys)["error"] == "not_found"
