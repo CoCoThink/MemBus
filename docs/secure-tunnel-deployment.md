@@ -71,10 +71,7 @@ The tunnel profile owns connectivity configuration. MemBus does not store the tu
 
 ```bash
 export MEMBUS_DB="$HOME/.membus/memory.db"
-export MEMBUS_RETRIEVAL_LOG_MODE=metadata-only
 ```
-
-`MEMBUS_RETRIEVAL_LOG_MODE=off` is also valid and remains the privacy-minimal default.
 
 ## 5. Run both health checks
 
