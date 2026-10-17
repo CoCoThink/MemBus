@@ -127,7 +127,7 @@ Seed one memory locally:
 membus --db "$MEMBUS_DB" put \
   --title 'MemBus tunnel smoke test' \
   --content 'The Secure MCP Tunnel smoke-test token is membus-tunnel-42.' \
-  --memory-type fact \
+  --memory-type fact
 ```
 
 Then, from ChatGPT, ask it to use MemBus to search for:
@@ -144,7 +144,7 @@ ChatGPT
   -> tunnel-client
   -> stdio
   -> membus-mcp
-  -> MemoryService
+  -> MemBus
   -> SQLite / FTS5
 ```
 
