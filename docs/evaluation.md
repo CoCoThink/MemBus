@@ -34,10 +34,6 @@ For each query, recall is the fraction of explicitly expected memories retrieved
 
 Mean Reciprocal Rank measures how early the first expected memory appears: rank #1 = 1.0, rank #2 = 0.5, rank #5 = 0.2, missing = 0.
 
-### Top-K precision
-
-Measures the fraction of Top-5 results that are explicitly expected relevant items in the golden annotation. Because many current cases have only one expected result, this metric is less important than Recall and MRR in the initial dataset.
-
 ### Zero-result rate
 
 The fraction of golden queries returning no result.
