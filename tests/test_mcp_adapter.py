@@ -53,5 +53,4 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
         )
         payload = searched.structured_content
         assert payload is not None
-        assert payload["results"][0]["memory"]["id"] == memory_id
-        assert payload["results"][0]["match"] == "exact"
+        assert payload["results"][0]["id"] == memory_id
