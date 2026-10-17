@@ -26,7 +26,6 @@ class EvaluationReport:
     recall_at_5: float
     recall_at_10: float
     mrr: float
-    precision_at_5: float
     zero_result_rate: float
     wrong_scope_hit_rate: float
     latency_p50_ms: float
@@ -48,7 +47,6 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
         recalls_5: list[float] = []
         recalls_10: list[float] = []
         reciprocal_ranks: list[float] = []
-        precisions_5: list[float] = []
         zero_results = 0
         wrong_scope_hits = 0
         latencies: list[float] = []
@@ -84,7 +82,6 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
 
             recalls_5.append(len(expected_ids.intersection(top5)) / expected_count)
             recalls_10.append(len(expected_ids.intersection(top10)) / expected_count)
-            precisions_5.append(len(expected_ids.intersection(top5)) / 5.0)
 
             first_rank = next(
                 (
@@ -111,7 +108,6 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
             recall_at_5=statistics.fmean(recalls_5),
             recall_at_10=statistics.fmean(recalls_10),
             mrr=statistics.fmean(reciprocal_ranks),
-            precision_at_5=statistics.fmean(precisions_5),
             zero_result_rate=zero_results / count,
             wrong_scope_hit_rate=wrong_scope_hits / count,
             latency_p50_ms=_percentile(latencies, 50),
