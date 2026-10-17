@@ -131,7 +131,7 @@ def _seed(service: MemoryService, payload: dict[str, Any]) -> dict[str, str]:
             raise ValueError(f"Duplicate golden memory key: {key}")
 
         memory_payload = dict(entry["memory"])
-        memory = service.put(MemoryCreate(**memory_payload), actor="golden-eval")
+        memory = service.put(MemoryCreate(**memory_payload))
         key_to_id[key] = memory.id
 
     return key_to_id
