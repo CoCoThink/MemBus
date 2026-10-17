@@ -3,23 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from membus import MemoryCreate, MemoryService, SQLiteStore
+from membus import MemBus
 from membus.cli import main
 from membus.doctor import run_doctor
 
 
 def test_doctor_reports_healthy_database(tmp_path: Path) -> None:
     path = tmp_path / "memory.db"
-    service = MemoryService(SQLiteStore(path))
-    service.put(
-        MemoryCreate(
-            title="Doctor test",
-            content="MemBus doctor checks canonical and FTS consistency.",
-            memory_type="fact",
-        )
+    bus = MemBus(path)
+    bus.put(
+        title="Doctor test",
+        content="MemBus doctor checks canonical and FTS consistency.",
+        memory_type="fact",
     )
 
-    report = run_doctor(SQLiteStore(path))
+    report = run_doctor(bus)
 
     assert report["ok"] is True
     checks = {check["name"]: check for check in report["checks"]}
@@ -32,18 +30,16 @@ def test_doctor_reports_healthy_database(tmp_path: Path) -> None:
 
 def test_doctor_detects_fts_drift(tmp_path: Path) -> None:
     path = tmp_path / "memory.db"
-    service = MemoryService(SQLiteStore(path))
-    memory = service.put(
-        MemoryCreate(
-            content="This row should also exist in FTS.",
-            memory_type="fact",
-        )
+    bus = MemBus(path)
+    memory = bus.put(
+        content="This row should also exist in FTS.",
+        memory_type="fact",
     )
 
-    with service.store.transaction() as conn:
+    with bus._transaction() as conn:
         conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory.id,))
 
-    report = run_doctor(SQLiteStore(path))
+    report = run_doctor(bus)
 
     assert report["ok"] is False
     checks = {check["name"]: check for check in report["checks"]}
