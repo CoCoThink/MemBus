@@ -72,7 +72,7 @@ These features should only be added later if a concrete problem requires them.
 
 ## 4. Keep the same MCP tool surface
 
-The current six tools remain the canonical V1 MCP contract:
+The current five tools remain the canonical V1 MCP contract:
 
 ```text
 memory_put
@@ -80,7 +80,6 @@ memory_get
 memory_update
 memory_delete
 memory_search
-memory_search_many
 ```
 
 ChatGPT Web and local coding agents see the same tools.
