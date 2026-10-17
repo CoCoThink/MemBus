@@ -27,7 +27,7 @@ class EvaluationReport:
     recall_at_10: float
     mrr: float
     zero_result_rate: float
-    wrong_scope_hit_rate: float
+    wrong_context_hit_rate: float
     latency_p50_ms: float
     latency_p95_ms: float
     failed_queries: tuple[str, ...]
@@ -48,7 +48,7 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
         recalls_10: list[float] = []
         reciprocal_ranks: list[float] = []
         zero_results = 0
-        wrong_scope_hits = 0
+        wrong_context_hits = 0
         latencies: list[float] = []
         failed: list[str] = []
 
@@ -94,7 +94,7 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
             reciprocal_ranks.append(1.0 / first_rank if first_rank is not None else 0.0)
 
             if forbidden_ids.intersection(top10):
-                wrong_scope_hits += 1
+                wrong_context_hits += 1
 
             if not expected_ids.intersection(top10):
                 failed.append(query_name)
@@ -109,7 +109,7 @@ def evaluate_dataset(path: str | Path) -> EvaluationReport:
             recall_at_10=statistics.fmean(recalls_10),
             mrr=statistics.fmean(reciprocal_ranks),
             zero_result_rate=zero_results / count,
-            wrong_scope_hit_rate=wrong_scope_hits / count,
+            wrong_context_hit_rate=wrong_context_hits / count,
             latency_p50_ms=_percentile(latencies, 50),
             latency_p95_ms=_percentile(latencies, 95),
             failed_queries=tuple(failed),
