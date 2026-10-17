@@ -1,5 +1,3 @@
-"""MemBus core package."""
+"""MemBus public API."""
 
-from .models import Memory, MemoryCreate, MemoryType, SearchContext, SearchRequest, SearchResult
-from .services.memory_service import MemoryService
-from .store import SQLiteStore
+from .core import MemBus, Memory, MemoryType
