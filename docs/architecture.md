@@ -86,7 +86,7 @@ query
      scope eligibility
           │
           ▼
-0.80 lexical + 0.20 scope
+lexical relevance only
           │
           ▼
         Top-K
@@ -128,15 +128,7 @@ branch
 
 Known workspace/project/repo/branch mismatches are ineligible.
 
-Scope also contributes a small ranking preference:
-
-```text
-global     0.40
-workspace  0.60
-project    0.75
-repo       0.90
-branch     1.00
-```
+Scope is only an eligibility boundary; it does not add a ranking bonus.
 
 ## 7. Operations
 
