@@ -66,7 +66,7 @@ def test_multiple_processes_can_write_one_canonical_store(tmp_path: Path) -> Non
 
     with service.db.connection() as conn:
         memory_count = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE status = 'active'"
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
         ).fetchone()[0]
         event_count = conn.execute(
             "SELECT COUNT(*) FROM memory_events WHERE event_type = 'created'"
