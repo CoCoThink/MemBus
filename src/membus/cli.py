@@ -31,11 +31,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite canonical database path.",
     )
     parser.add_argument(
-        "--retrieval-log-mode",
-        choices=("off", "metadata-only", "full"),
-        default=os.environ.get("MEMBUS_RETRIEVAL_LOG_MODE", "off"),
-    )
-    parser.add_argument(
         "--compact",
         action="store_true",
         help="Emit compact JSON instead of pretty JSON.",
@@ -48,7 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     put = sub.add_parser("put", help="Store an explicit durable memory.")
     _add_memory_fields(put, require_core=True)
-    put.add_argument("--actor")
 
     get = sub.add_parser("get", help="Get one memory by ID.")
     get.add_argument("memory_id")
@@ -57,11 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update", help="Update mutable fields of a memory.")
     update.add_argument("memory_id")
     _add_memory_fields(update, require_core=False)
-    update.add_argument("--actor")
 
     delete = sub.add_parser("delete", help="Logically delete a memory.")
     delete.add_argument("memory_id")
-    delete.add_argument("--actor")
 
     alias = sub.add_parser("alias", help="Add or replace a deterministic alias.")
     alias.add_argument("alias")
@@ -73,7 +65,6 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--type", dest="types", action="append", default=[])
     search.add_argument("--limit", type=int, default=10)
     search.add_argument("--explain", action="store_true")
-    search.add_argument("--include-deleted", action="store_true")
 
     many = sub.add_parser("search-many", help="Search several query formulations.")
     many.add_argument("queries", nargs="+")
@@ -81,7 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
     many.add_argument("--type", dest="types", action="append", default=[])
     many.add_argument("--limit", type=int, default=10)
     many.add_argument("--explain", action="store_true")
-    many.add_argument("--include-deleted", action="store_true")
 
     backup = sub.add_parser("backup", help="Create a consistent SQLite backup.")
     backup.add_argument("destination")
@@ -135,7 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(report.as_dict(), compact=args.compact)
         return 0 if report.ok else 1
 
-    service = MemoryService(db, retrieval_log_mode=args.retrieval_log_mode)
+    service = MemoryService(db)
 
     if args.command == "init":
         _print_json(
@@ -145,10 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "put":
-        memory = service.put(
-            MemoryCreate(**_memory_create_kwargs(args)),
-            actor=args.actor,
-        )
+        memory = service.put(MemoryCreate(**_memory_create_kwargs(args)))
         _print_json(asdict(memory), compact=args.compact)
         return 0
 
@@ -165,16 +152,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "update":
         changes = _memory_update_kwargs(args)
-        memory = service.update(
-            args.memory_id,
-            actor=args.actor,
-            **changes,
-        )
+        memory = service.update(args.memory_id, **changes)
         _print_json(asdict(memory), compact=args.compact)
         return 0
 
     if args.command == "delete":
-        deleted = service.delete(args.memory_id, actor=args.actor)
+        deleted = service.delete(args.memory_id)
         _print_json(
             {"id": args.memory_id, "deleted": deleted},
             compact=args.compact,
@@ -197,7 +180,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 types=args.types,
                 limit=args.limit,
                 explain=args.explain,
-                include_deleted=args.include_deleted,
             )
         )
         _print_json(
