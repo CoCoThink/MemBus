@@ -1,0 +1,19 @@
+[Unit]
+Description=MemBus Secure MCP Tunnel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=membus
+Group=membus
+EnvironmentFile=/etc/membus/tunnel.env
+ExecStart=/usr/local/bin/tunnel-client run --profile membus
+Restart=on-failure
+RestartSec=5
+
+# The named tunnel profile must already exist for the 'membus' user.
+# Initialize it as that user before enabling this service.
+
+[Install]
+WantedBy=multi-user.target
