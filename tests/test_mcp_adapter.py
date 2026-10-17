@@ -39,7 +39,6 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
                 "scope": "repo",
                 "project": "payment",
                 "repo": "payment-api",
-                "trust": 1.0,
             },
         )
         memory = created.structured_content
