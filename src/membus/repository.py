@@ -1,14 +1,9 @@
-"""Persistence repository for MemBus.
-
-SQL stays in this module so protocol adapters and domain services never depend
-on SQLite table details.
-"""
+"""SQLite persistence for MemBus."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any
 
 from .db import Database
@@ -37,7 +32,7 @@ class MemoryRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def create(self, memory: Memory, *, actor: str | None = None) -> None:
+    def create(self, memory: Memory) -> None:
         with self.db.transaction() as conn:
             conn.execute(
                 """
@@ -55,14 +50,6 @@ class MemoryRepository:
                 """,
                 _memory_params(memory),
             )
-            self._append_event(
-                conn,
-                memory_id=memory.id,
-                event_type="created",
-                payload=None,
-                actor=actor,
-                created_at=memory.created_at,
-            )
 
     def get(self, memory_id: str, *, include_deleted: bool = False) -> Memory | None:
         sql = "SELECT * FROM memories WHERE id = ?"
@@ -74,22 +61,9 @@ class MemoryRepository:
             row = conn.execute(sql, params).fetchone()
         return _memory_from_row(row) if row is not None else None
 
-    def update(
-        self,
-        memory: Memory,
-        *,
-        changed_fields: Mapping[str, Any],
-        actor: str | None = None,
-    ) -> Memory:
+    def update(self, memory: Memory) -> Memory:
         with self.db.transaction() as conn:
-            current = conn.execute(
-                "SELECT id FROM memories WHERE id = ?",
-                (memory.id,),
-            ).fetchone()
-            if current is None:
-                raise KeyError(memory.id)
-
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE memories
                 SET
@@ -109,57 +83,29 @@ class MemoryRepository:
                 """,
                 _memory_params(memory),
             )
-            self._append_event(
-                conn,
-                memory_id=memory.id,
-                event_type="updated",
-                payload={"changed": dict(changed_fields)},
-                actor=actor,
-                created_at=memory.updated_at,
-            )
-
+            if cursor.rowcount == 0:
+                raise KeyError(memory.id)
         return memory
 
-    def logical_delete(
-        self,
-        memory_id: str,
-        *,
-        deleted_at: str,
-        actor: str | None = None,
-    ) -> bool:
+    def logical_delete(self, memory_id: str, *, deleted_at: str) -> bool:
         with self.db.transaction() as conn:
-            current = conn.execute(
-                "SELECT deleted_at FROM memories WHERE id = ?",
-                (memory_id,),
-            ).fetchone()
-            if current is None or current["deleted_at"] is not None:
-                return False
-
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE memories
                 SET deleted_at = ?,
                     updated_at = ?
                 WHERE id = ?
+                  AND deleted_at IS NULL
                 """,
                 (deleted_at, deleted_at, memory_id),
             )
-            self._append_event(
-                conn,
-                memory_id=memory_id,
-                event_type="deleted",
-                payload=None,
-                actor=actor,
-                created_at=deleted_at,
-            )
-            return True
+            return cursor.rowcount > 0
 
     def exact_candidates(
         self,
         query: str,
         *,
         types: tuple[str, ...] = (),
-        include_deleted: bool = False,
         limit: int = 50,
     ) -> list[Memory]:
         where = [
@@ -168,12 +114,10 @@ class MemoryRepository:
                 instr(lower(m.title), lower(?)) > 0
                 OR instr(lower(m.content), lower(?)) > 0
             )
-            """
+            """,
+            "m.deleted_at IS NULL",
         ]
         params: list[Any] = [query, query]
-
-        if not include_deleted:
-            where.append("m.deleted_at IS NULL")
         _append_type_filter(where, params, types)
 
         sql = f"""
@@ -194,14 +138,10 @@ class MemoryRepository:
         match_query: str,
         *,
         types: tuple[str, ...] = (),
-        include_deleted: bool = False,
         limit: int = 50,
     ) -> list[tuple[Memory, float]]:
-        where = ["memory_fts MATCH ?"]
+        where = ["memory_fts MATCH ?", "m.deleted_at IS NULL"]
         params: list[Any] = [match_query]
-
-        if not include_deleted:
-            where.append("m.deleted_at IS NULL")
         _append_type_filter(where, params, types)
 
         sql = f"""
@@ -263,87 +203,6 @@ class MemoryRepository:
                 """,
                 (alias.casefold(), canonical.casefold(), created_at),
             )
-
-    def append_retrieval_log(
-        self,
-        *,
-        query: str | None,
-        scope: Mapping[str, Any],
-        candidate_count: int,
-        result_ids: list[str],
-        latency_ms: float,
-        created_at: str,
-    ) -> None:
-        with self.db.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO retrieval_logs(
-                    query, scope_json, candidate_count,
-                    result_ids_json, latency_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    query,
-                    json.dumps(scope, ensure_ascii=False, sort_keys=True),
-                    candidate_count,
-                    json.dumps(result_ids),
-                    latency_ms,
-                    created_at,
-                ),
-            )
-
-    def list_events(self, memory_id: str) -> list[dict[str, Any]]:
-        with self.db.connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, memory_id, event_type, payload_json, actor, created_at
-                FROM memory_events
-                WHERE memory_id = ?
-                ORDER BY id ASC
-                """,
-                (memory_id,),
-            ).fetchall()
-
-        return [
-            {
-                "id": int(row["id"]),
-                "memory_id": str(row["memory_id"]),
-                "event_type": str(row["event_type"]),
-                "payload": json.loads(row["payload_json"])
-                if row["payload_json"]
-                else None,
-                "actor": row["actor"],
-                "created_at": str(row["created_at"]),
-            }
-            for row in rows
-        ]
-
-    @staticmethod
-    def _append_event(
-        conn: sqlite3.Connection,
-        *,
-        memory_id: str,
-        event_type: str,
-        payload: Mapping[str, Any] | None,
-        actor: str | None,
-        created_at: str,
-    ) -> None:
-        conn.execute(
-            """
-            INSERT INTO memory_events(
-                memory_id, event_type, payload_json, actor, created_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                memory_id,
-                event_type,
-                json.dumps(payload, ensure_ascii=False, sort_keys=True)
-                if payload is not None
-                else None,
-                actor,
-                created_at,
-            ),
-        )
 
 
 def _append_type_filter(
