@@ -511,8 +511,16 @@ def _context_order(
         )
         params.append(value)
 
-    conflicts = " + ".join(conflict_terms) if conflict_terms else "0"
-    matches = " + ".join(match_terms) if match_terms else "0"
+    conflicts = (
+        " + ".join(conflict_terms)
+        if conflict_terms
+        else "CASE WHEN 1 THEN 0 END"
+    )
+    matches = (
+        " + ".join(match_terms)
+        if match_terms
+        else "CASE WHEN 1 THEN 0 END"
+    )
 
     # Keep the explicit variable so the parameter order is obvious:
     # conflict placeholders first, then match placeholders.
