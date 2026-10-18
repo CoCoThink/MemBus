@@ -28,7 +28,8 @@ def evaluate_dataset(path: str | Path) -> dict[str, Any]:
         latencies: list[float] = []
         failed: list[str] = []
         zero_results = 0
-        wrong_context_hits = 0
+        preference_errors = 0
+        preference_cases = 0
 
         queries = payload.get("queries", [])
         if not queries:
@@ -39,8 +40,8 @@ def evaluate_dataset(path: str | Path) -> dict[str, Any]:
             expected_ids = {
                 key_to_id[key] for key in case.get("expected", ())
             }
-            forbidden_ids = {
-                key_to_id[key] for key in case.get("forbidden", ())
+            lower_priority_ids = {
+                key_to_id[key] for key in case.get("lower_priority", ())
             }
 
             started = time.perf_counter()
@@ -76,8 +77,33 @@ def evaluate_dataset(path: str | Path) -> dict[str, Any]:
                 1.0 / first_rank if first_rank is not None else 0.0
             )
 
-            if forbidden_ids.intersection(result_ids[:10]):
-                wrong_context_hits += 1
+            if lower_priority_ids:
+                preference_cases += 1
+                first_expected_rank = next(
+                    (
+                        index
+                        for index, memory_id in enumerate(result_ids, start=1)
+                        if memory_id in expected_ids
+                    ),
+                    None,
+                )
+                first_lower_rank = next(
+                    (
+                        index
+                        for index, memory_id in enumerate(result_ids, start=1)
+                        if memory_id in lower_priority_ids
+                    ),
+                    None,
+                )
+                if (
+                    first_lower_rank is not None
+                    and (
+                        first_expected_rank is None
+                        or first_lower_rank < first_expected_rank
+                    )
+                ):
+                    preference_errors += 1
+
             if not expected_ids.intersection(result_ids[:10]):
                 failed.append(name)
 
@@ -88,7 +114,10 @@ def evaluate_dataset(path: str | Path) -> dict[str, Any]:
             "recall_at_10": statistics.fmean(recalls_10),
             "mrr": statistics.fmean(reciprocal_ranks),
             "zero_result_rate": zero_results / count,
-            "wrong_context_hit_rate": wrong_context_hits / count,
+            "context_preference_case_count": preference_cases,
+            "context_preference_error_rate": (
+                preference_errors / preference_cases if preference_cases else 0.0
+            ),
             "latency_p50_ms": _percentile(latencies, 50),
             "latency_p95_ms": _percentile(latencies, 95),
             "failed_queries": failed,
@@ -130,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("dataset")
     parser.add_argument("--min-recall-5", type=float)
     parser.add_argument("--min-recall-10", type=float)
-    parser.add_argument("--max-wrong-context-rate", type=float)
+    parser.add_argument("--max-context-preference-error-rate", type=float)
     args = parser.parse_args(argv)
 
     report = evaluate_dataset(args.dataset)
@@ -149,13 +178,14 @@ def main(argv: list[str] | None = None) -> int:
             f"recall@10 {report['recall_at_10']:.4f} < {args.min_recall_10:.4f}"
         )
     if (
-        args.max_wrong_context_rate is not None
-        and report["wrong_context_hit_rate"] > args.max_wrong_context_rate
+        args.max_context_preference_error_rate is not None
+        and report["context_preference_error_rate"]
+        > args.max_context_preference_error_rate
     ):
         failures.append(
-            "wrong-context rate "
-            f"{report['wrong_context_hit_rate']:.4f} > "
-            f"{args.max_wrong_context_rate:.4f}"
+            "context-preference error rate "
+            f"{report['context_preference_error_rate']:.4f} > "
+            f"{args.max_context_preference_error_rate:.4f}"
         )
 
     for failure in failures:
