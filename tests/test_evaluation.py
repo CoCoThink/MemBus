@@ -17,7 +17,7 @@ def test_golden_retrieval_baseline() -> None:
             str(ROOT / "evals" / "golden_v1.json"),
             "--min-recall-5", "0.95",
             "--min-recall-10", "0.95",
-            "--max-wrong-context-rate", "0.0",
+            "--max-context-preference-error-rate", "0.0",
         ],
         cwd=ROOT,
         check=True,
@@ -31,5 +31,5 @@ def test_golden_retrieval_baseline() -> None:
     assert report["recall_at_10"] >= 0.95
     assert report["mrr"] >= 0.90
     assert report["zero_result_rate"] == 0.0
-    assert report["wrong_context_hit_rate"] == 0.0
+    assert report["context_preference_error_rate"] == 0.0
     assert report["failed_queries"] == []
