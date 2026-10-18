@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Barrier, Event
 
 import pytest
 
@@ -213,3 +216,80 @@ def test_type_filter(bus: MemBus) -> None:
 def test_search_limit_is_bounded(bus: MemBus) -> None:
     with pytest.raises(ValueError, match="limit"):
         bus.search("anything", limit=101)
+
+
+def test_concurrent_updates_preserve_independent_changes(
+    bus: MemBus, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = bus.put(
+        title="Original title",
+        content="Original content",
+        memory_type="note",
+    )
+
+    # On the previous implementation both updates read the same stale row
+    # before either starts a write transaction. The fixed implementation
+    # reads only after BEGIN IMMEDIATE, so this hook is never invoked.
+    original_get = bus.get
+    reads_completed = Barrier(2)
+
+    def synchronized_get(memory_id: str):
+        result = original_get(memory_id)
+        reads_completed.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(bus, "get", synchronized_get)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        update_title = executor.submit(bus.update, memory.id, title="New title")
+        update_content = executor.submit(
+            bus.update, memory.id, content="New content"
+        )
+        update_title.result(timeout=15)
+        update_content.result(timeout=15)
+
+    final = original_get(memory.id)
+    assert final is not None
+    assert final.title == "New title"
+    assert final.content == "New content"
+
+
+def test_delete_between_old_read_and_write_cannot_report_ghost_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "race.db"
+    updater = MemBus(path)
+    deleter = MemBus(path)
+    memory = updater.put(content="Before deletion", memory_type="note")
+
+    # Pause only the updater before it enters its write transaction.
+    # Previously update() already read the row at this point. Now the
+    # initial SELECT occurs inside this transaction after the deletion.
+    original_transaction = updater._transaction
+    update_ready = Event()
+    continue_update = Event()
+
+    @contextmanager
+    def delayed_transaction():
+        update_ready.set()
+        if not continue_update.wait(timeout=10):
+            raise TimeoutError("update transaction was not released")
+        with original_transaction() as conn:
+            yield conn
+
+    monkeypatch.setattr(updater, "_transaction", delayed_transaction)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            updater.update, memory.id, content="Should not be saved"
+        )
+        try:
+            assert update_ready.wait(timeout=10)
+            assert deleter.delete(memory.id) is True
+        finally:
+            continue_update.set()
+
+        with pytest.raises(KeyError, match=memory.id):
+            future.result(timeout=15)
+
+    assert deleter.get(memory.id) is None

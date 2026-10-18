@@ -142,28 +142,35 @@ class MemBus:
         if unknown:
             raise ValueError(f"Unsupported mutable fields: {sorted(unknown)}")
 
-        current = self.get(memory_id)
-        if current is None:
-            raise KeyError(memory_id)
-        if not changes:
-            return current
-
-        proposed = replace(current, **changes)
-        memory = Memory(
-            id=current.id,
-            **_normalize_memory_values(
-                title=proposed.title,
-                content=proposed.content,
-                memory_type=proposed.memory_type,
-                workspace=proposed.workspace,
-                project=proposed.project,
-                repo=proposed.repo,
-                branch=proposed.branch,
-            ),
-        )
-
+        # Lock before reading: concurrent updates and deletes must not act on
+        # a stale snapshot or silently overwrite another writer's changes.
         with self._transaction() as conn:
-            conn.execute(
+            row = conn.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(memory_id)
+
+            current = _memory_from_row(row)
+            if not changes:
+                return current
+
+            proposed = replace(current, **changes)
+            memory = Memory(
+                id=current.id,
+                **_normalize_memory_values(
+                    title=proposed.title,
+                    content=proposed.content,
+                    memory_type=proposed.memory_type,
+                    workspace=proposed.workspace,
+                    project=proposed.project,
+                    repo=proposed.repo,
+                    branch=proposed.branch,
+                ),
+            )
+
+            cursor = conn.execute(
                 """
                 UPDATE memories
                 SET
@@ -178,6 +185,8 @@ class MemBus:
                 """,
                 _memory_params(memory),
             )
+            if cursor.rowcount != 1:
+                raise KeyError(memory_id)
         return memory
 
     def delete(self, memory_id: str) -> bool:
