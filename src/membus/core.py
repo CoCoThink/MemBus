@@ -1,71 +1,175 @@
-"""Minimal MemBus core: SQLite memory plus lexical retrieval."""
+"""MemBus core: shared SQLite memory with lexical retrieval."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
+import json
 import re
 import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
+_SCHEMA_VERSION = 1
 _BUSY_TIMEOUT_MS = 5_000
 _BEGIN_RETRY_ATTEMPTS = 5
+_MAX_TITLE = 200
+_MAX_CONTENT = 4_000
+_MAX_QUERY_TOKENS = 32
+_SIMILAR_LIMIT = 3
 _MEMORY_TYPES = frozenset({
     "fact",
     "decision",
     "preference",
     "procedure",
     "incident",
-    "failure",
     "note",
 })
 _TOKEN_RE = re.compile(r"[^\W_]+(?:[_-][^\W_]+)*", re.UNICODE)
-_HAN_RUN_RE = re.compile(r"[\u3400-\u9fff]+")
+_HAN_RUN_RE = re.compile(r"[㐀-鿿]+")
+# Question words and glue that would otherwise fill an OR query's top-K.
+# Deliberately excludes negations ("not", "no", "never"), which carry meaning.
+_STOPWORDS = frozenset(
+    "a an and are as at be been by can could do does for from had has have "
+    "how i if in into is it its me my of on or our should so than that the "
+    "their then there these they this those to us was we were what when "
+    "where which who whom why will with would you your".split()
+)
 _CONTEXT_FIELDS = ("workspace", "project", "repo", "branch")
 _USER_FIELDS = ("title", "content", "memory_type", *_CONTEXT_FIELDS, "source")
-_MEMORY_COLUMNS = ("id", *_USER_FIELDS, "created_at", "updated_at", "deleted_at")
-_MUTABLE_FIELDS = set(_USER_FIELDS)
+_MEMORY_COLUMNS = (
+    "id", *_USER_FIELDS,
+    "version", "created_at", "updated_at", "deleted_at", "superseded_by",
+)
+_ACTIVE = "m.deleted_at IS NULL AND m.superseded_by IS NULL"
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL DEFAULT '',
-    content TEXT NOT NULL,
-    memory_type TEXT NOT NULL,
-    workspace TEXT, project TEXT, repo TEXT, branch TEXT,
-    source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-    deleted_at TEXT
-);
-CREATE TABLE IF NOT EXISTS aliases (
-    alias TEXT PRIMARY KEY,
-    canonical TEXT NOT NULL
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    memory_id UNINDEXED, title, content,
-    tokenize = 'unicode61 remove_diacritics 2'
-);
-CREATE TRIGGER IF NOT EXISTS memories_ai
-AFTER INSERT ON memories WHEN new.deleted_at IS NULL BEGIN
-    INSERT INTO memory_fts(memory_id, title, content)
-    VALUES (new.id, new.title, new.content);
-END;
-CREATE TRIGGER IF NOT EXISTS memories_au
-AFTER UPDATE OF title, content, deleted_at ON memories BEGIN
-    DELETE FROM memory_fts WHERE memory_id = old.id;
-    INSERT INTO memory_fts(memory_id, title, content)
-    SELECT new.id, new.title, new.content WHERE new.deleted_at IS NULL;
-END;
-CREATE TRIGGER IF NOT EXISTS memories_ad
-AFTER DELETE ON memories BEGIN
-    DELETE FROM memory_fts WHERE memory_id = old.id;
-END;
-"""
+# One statement per entry so initialization can run inside a single
+# BEGIN IMMEDIATE transaction (trigger bodies contain semicolons).
+_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS memories (
+        rid INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        memory_type TEXT NOT NULL,
+        workspace TEXT, project TEXT, repo TEXT, branch TEXT,
+        source TEXT,
+        content_hash TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        superseded_by TEXT
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_active_hash
+    ON memories(content_hash)
+    WHERE deleted_at IS NULL AND superseded_by IS NULL
+    """,
+    "CREATE INDEX IF NOT EXISTS memories_updated ON memories(updated_at, id)",
+    # Covering index: `contexts` is a pure index scan.
+    """
+    CREATE INDEX IF NOT EXISTS memories_context
+    ON memories(workspace, project, repo)
+    WHERE deleted_at IS NULL AND superseded_by IS NULL
+    """,
+    "CREATE INDEX IF NOT EXISTS memories_successor ON memories(superseded_by)"
+    " WHERE superseded_by IS NOT NULL",
+    """
+    CREATE TABLE IF NOT EXISTS aliases (
+        alias TEXT PRIMARY KEY,
+        canonical TEXT NOT NULL
+    )
+    """,
+    # Both FTS tables use memories.rid as rowid so sync is a rowid lookup.
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        title, content,
+        tokenize = 'porter unicode61 remove_diacritics 2'
+    )
+    """,
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_trigram USING fts5(
+        title, content,
+        tokenize = 'trigram case_sensitive 0'
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS memories_ai
+    AFTER INSERT ON memories
+    WHEN new.deleted_at IS NULL AND new.superseded_by IS NULL BEGIN
+        INSERT INTO memory_fts(rowid, title, content)
+        VALUES (new.rid, new.title, new.content);
+        INSERT INTO memory_trigram(rowid, title, content)
+        VALUES (new.rid, new.title, new.content);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS memories_au
+    AFTER UPDATE OF title, content, deleted_at, superseded_by ON memories BEGIN
+        DELETE FROM memory_fts WHERE rowid = old.rid;
+        DELETE FROM memory_trigram WHERE rowid = old.rid;
+        INSERT INTO memory_fts(rowid, title, content)
+        SELECT new.rid, new.title, new.content
+        WHERE new.deleted_at IS NULL AND new.superseded_by IS NULL;
+        INSERT INTO memory_trigram(rowid, title, content)
+        SELECT new.rid, new.title, new.content
+        WHERE new.deleted_at IS NULL AND new.superseded_by IS NULL;
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS memories_ad
+    AFTER DELETE ON memories BEGIN
+        DELETE FROM memory_fts WHERE rowid = old.rid;
+        DELETE FROM memory_trigram WHERE rowid = old.rid;
+    END
+    """,
+)
+
+
+class _Unset:
+    """Marks an update field that was not passed (``None`` clears context)."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET: Any = _Unset()
+
+
+class NotFound(KeyError):
+    """No memory with this ID, or not in the state the operation requires."""
+
+    def __init__(self, memory_id: str) -> None:
+        super().__init__(memory_id)
+        self.memory_id = memory_id
+
+
+class VersionConflict(Exception):
+    """update() was given a stale ``expected_version``."""
+
+    def __init__(self, current: Memory) -> None:
+        super().__init__(
+            f"{current.id} is at version {current.version}"
+        )
+        self.current = current
+
+
+class DuplicateMemory(Exception):
+    """The change would duplicate another active memory."""
+
+    def __init__(self, existing: Memory) -> None:
+        super().__init__(f"identical to active memory {existing.id}")
+        self.existing = existing
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,17 +183,72 @@ class Memory:
     repo: str | None
     branch: str | None
     source: str | None
+    version: int
     created_at: str
     updated_at: str
     deleted_at: str | None
+    superseded_by: str | None
+
+    @property
+    def state(self) -> str:
+        if self.deleted_at is not None:
+            return "deleted"
+        if self.superseded_by is not None:
+            return "superseded"
+        return "active"
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["state"] = self.state
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class PutResult:
+    memory: Memory
+    created: bool
+    superseded: list[str]
+    similar: list[Memory]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "memory": self.memory.to_dict(),
+            "created": self.created,
+            "superseded": list(self.superseded),
+            "similar": [memory.to_dict() for memory in self.similar],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ListPage:
+    memories: list[Memory]
+    next_cursor: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "memories": [memory.to_dict() for memory in self.memories],
+            "next_cursor": self.next_cursor,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ContextCount:
+    workspace: str | None
+    project: str | None
+    repo: str | None
+    count: int
 
 
 class MemBus:
-    """User-owned SQLite memory store."""
+    """User-owned SQLite memory bus."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._initialize()
+
+    # ------------------------------------------------------------------
+    # Writes
+    # ------------------------------------------------------------------
 
     def put(
         self,
@@ -102,107 +261,209 @@ class MemBus:
         repo: str | None = None,
         branch: str | None = None,
         source: str | None = None,
-    ) -> Memory:
+        supersedes: Iterable[str] = (),
+    ) -> PutResult:
         values = _normalize_memory_values(
             title=title, content=content, memory_type=memory_type,
             workspace=workspace, project=project, repo=repo, branch=branch,
             source=source,
         )
+        supersede_ids = tuple(dict.fromkeys(supersedes))
+        digest = _content_hash(values)
         now = _utc_now()
-        memory = Memory(
-            id=f"mem_{uuid.uuid4().hex}", **values,
-            created_at=now, updated_at=now, deleted_at=None,
-        )
-        with self._transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO memories (
-                    id, title, content, memory_type, workspace, project,
-                    repo, branch, source, created_at, updated_at, deleted_at
-                ) VALUES (
-                    :id, :title, :content, :memory_type, :workspace, :project,
-                    :repo, :branch, :source, :created_at, :updated_at, :deleted_at
-                )
-                """,
-                _memory_params(memory),
-            )
-        return memory
 
-    def get(self, memory_id: str) -> Memory | None:
-        with self._connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL",
-                (memory_id,),
+        with self._transaction() as conn:
+            existing = conn.execute(
+                f"SELECT m.* FROM memories AS m "
+                f"WHERE m.content_hash = ? AND {_ACTIVE}",
+                (digest,),
             ).fetchone()
-        return _memory_from_row(row) if row is not None else None
+            if existing is not None:
+                memory, created = _memory_from_row(existing), False
+            else:
+                memory = Memory(
+                    id=f"mem_{uuid.uuid4().hex}", **values, version=1,
+                    created_at=now, updated_at=now,
+                    deleted_at=None, superseded_by=None,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memories (
+                        id, title, content, memory_type, workspace, project,
+                        repo, branch, source, content_hash, version,
+                        created_at, updated_at, deleted_at, superseded_by
+                    ) VALUES (
+                        :id, :title, :content, :memory_type, :workspace,
+                        :project, :repo, :branch, :source, :content_hash,
+                        :version, :created_at, :updated_at, :deleted_at,
+                        :superseded_by
+                    )
+                    """,
+                    {**_memory_params(memory), "content_hash": digest},
+                )
+                created = True
 
-    def update(self, memory_id: str, **changes: Any) -> Memory:
-        unknown = set(changes) - _MUTABLE_FIELDS
-        if unknown:
-            raise ValueError(f"Unsupported mutable fields: {sorted(unknown)}")
+            for old_id in supersede_ids:
+                if old_id == memory.id:
+                    raise ValueError("a memory cannot supersede itself")
+                cursor = conn.execute(
+                    f"""
+                    UPDATE memories AS m SET superseded_by = ?,
+                        version = version + 1, updated_at = ?
+                    WHERE m.id = ? AND {_ACTIVE}
+                    """,
+                    (memory.id, now, old_id),
+                )
+                if cursor.rowcount != 1:
+                    raise NotFound(old_id)
 
-        # Keep the read and write under the same BEGIN IMMEDIATE lock.
+        similar = self._similar_to(memory, ignore=set(supersede_ids))
+        return PutResult(
+            memory=memory, created=created,
+            superseded=list(supersede_ids), similar=similar,
+        )
+
+    def update(
+        self,
+        memory_id: str,
+        *,
+        expected_version: int,
+        title: str | None = UNSET,
+        content: str = UNSET,
+        memory_type: str = UNSET,
+        workspace: str | None = UNSET,
+        project: str | None = UNSET,
+        repo: str | None = UNSET,
+        branch: str | None = UNSET,
+        source: str | None = UNSET,
+    ) -> Memory:
+        """Correct an active memory.
+
+        Omitted fields are unchanged; ``None`` clears title, context, or
+        source. Raises VersionConflict if the memory moved on and
+        DuplicateMemory if the result would equal another active memory.
+        """
+        passed = {
+            "title": title, "content": content, "memory_type": memory_type,
+            "workspace": workspace, "project": project, "repo": repo,
+            "branch": branch, "source": source,
+        }
+        changes = {k: v for k, v in passed.items() if v is not UNSET}
+        if not changes:
+            raise ValueError("update requires at least one field")
+        for required in ("content", "memory_type"):
+            if required in changes and changes[required] is None:
+                raise ValueError(f"{required} cannot be cleared")
+        if changes.get("title", "") is None:
+            changes["title"] = ""
+
+        # Read and write under the same BEGIN IMMEDIATE lock.
         with self._transaction() as conn:
             row = conn.execute(
-                "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL",
+                f"SELECT m.* FROM memories AS m WHERE m.id = ? AND {_ACTIVE}",
                 (memory_id,),
             ).fetchone()
             if row is None:
-                raise KeyError(memory_id)
+                raise NotFound(memory_id)
             current = _memory_from_row(row)
-            if not changes:
+            if current.version != expected_version:
+                raise VersionConflict(current)
+
+            values = _normalize_memory_values(**{
+                field: changes.get(field, getattr(current, field))
+                for field in _USER_FIELDS
+            })
+            if all(getattr(current, f) == values[f] for f in _USER_FIELDS):
                 return current
 
-            proposed = replace(current, **changes)
-            normalized = _normalize_memory_values(
-                title=proposed.title,
-                content=proposed.content,
-                memory_type=proposed.memory_type,
-                workspace=proposed.workspace,
-                project=proposed.project,
-                repo=proposed.repo,
-                branch=proposed.branch,
-                source=proposed.source,
+            digest = _content_hash(values)
+            clash = conn.execute(
+                f"SELECT m.* FROM memories AS m "
+                f"WHERE m.content_hash = ? AND m.id <> ? AND {_ACTIVE}",
+                (digest, memory_id),
+            ).fetchone()
+            if clash is not None:
+                raise DuplicateMemory(_memory_from_row(clash))
+
+            memory = replace(
+                current, **values,
+                version=current.version + 1, updated_at=_utc_now(),
             )
-            memory = Memory(
-                id=current.id, **normalized,
-                created_at=current.created_at,
-                updated_at=_utc_now(),
-                deleted_at=None,
-            )
-            cursor = conn.execute(
+            conn.execute(
                 """
                 UPDATE memories SET
                     title = :title, content = :content,
                     memory_type = :memory_type, workspace = :workspace,
                     project = :project, repo = :repo, branch = :branch,
-                    source = :source, updated_at = :updated_at
-                WHERE id = :id AND deleted_at IS NULL
+                    source = :source, content_hash = :content_hash,
+                    version = :version, updated_at = :updated_at
+                WHERE id = :id
                 """,
-                _memory_params(memory),
+                {**_memory_params(memory), "content_hash": digest},
             )
-            if cursor.rowcount != 1:
-                raise KeyError(memory_id)
         return memory
 
     def delete(self, memory_id: str) -> bool:
-        """Soft-delete a memory; repeated deletion returns False."""
+        """Soft-delete; memories it superseded become active again."""
         now = _utc_now()
         with self._transaction() as conn:
-            return conn.execute(
-                """UPDATE memories SET deleted_at = ?, updated_at = ?
-                   WHERE id = ? AND deleted_at IS NULL""",
+            cursor = conn.execute(
+                """
+                UPDATE memories SET deleted_at = ?, updated_at = ?,
+                    version = version + 1
+                WHERE id = ? AND deleted_at IS NULL
+                """,
                 (now, now, memory_id),
-            ).rowcount > 0
+            )
+            if cursor.rowcount == 0:
+                return False
+            _release_superseded(conn, memory_id, now)
+            return True
 
     def restore(self, memory_id: str) -> bool:
-        """Restore a soft-deleted memory; active/missing IDs return False."""
+        """Undo delete. Active/missing IDs return False."""
+        now = _utc_now()
         with self._transaction() as conn:
-            return conn.execute(
-                """UPDATE memories SET deleted_at = NULL, updated_at = ?
-                   WHERE id = ? AND deleted_at IS NOT NULL""",
-                (_utc_now(), memory_id),
-            ).rowcount > 0
+            row = conn.execute(
+                "SELECT m.* FROM memories AS m "
+                "WHERE m.id = ? AND m.deleted_at IS NOT NULL",
+                (memory_id,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            successor = row["superseded_by"]
+            if successor is not None and conn.execute(
+                "SELECT 1 FROM memories WHERE id = ? AND deleted_at IS NULL",
+                (successor,),
+            ).fetchone() is None:
+                successor = None
+            if successor is None:
+                clash = _active_clash(conn, row["content_hash"], memory_id)
+                if clash is not None:
+                    raise DuplicateMemory(_memory_from_row(clash))
+
+            conn.execute(
+                """
+                UPDATE memories SET deleted_at = NULL, superseded_by = ?,
+                    updated_at = ?, version = version + 1
+                WHERE id = ?
+                """,
+                (successor, now, memory_id),
+            )
+            return True
+
+    def purge(self, memory_id: str) -> bool:
+        """Physically remove a memory in any state. Irreversible."""
+        now = _utc_now()
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "DELETE FROM memories WHERE id = ?", (memory_id,)
+            )
+            if cursor.rowcount == 0:
+                return False
+            _release_superseded(conn, memory_id, now)
+            return True
 
     def put_alias(self, alias: str, canonical: str) -> None:
         alias = _normalize_text(alias)
@@ -219,6 +480,83 @@ class MemBus:
                 """,
                 (alias, canonical),
             )
+
+    # ------------------------------------------------------------------
+    # Reads
+    # ------------------------------------------------------------------
+
+    def get(self, memory_id: str) -> Memory | None:
+        """Read a memory in any state; check ``state``/``superseded_by``."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,),
+            ).fetchone()
+        return _memory_from_row(row) if row is not None else None
+
+    def list(
+        self,
+        *,
+        workspace: str | None = None,
+        project: str | None = None,
+        repo: str | None = None,
+        branch: str | None = None,
+        types: Iterable[str] = (),
+        updated_since: str | None = None,
+        include_inactive: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> ListPage:
+        """Memories applicable to a context, newest change first."""
+        if not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        context = _context_from(workspace, project, repo, branch)
+        normalized_types = _normalize_types(types)
+
+        where: list[str] = [] if include_inactive else [_ACTIVE]
+        params: list[Any] = []
+        _append_type_filter(where, params, normalized_types)
+        _append_strict_context(where, params, context)
+        if updated_since is not None:
+            where.append("m.updated_at > ?")
+            params.append(_normalize_timestamp(updated_since))
+        if cursor is not None:
+            after_time, after_id = _decode_cursor(cursor)
+            where.append("(m.updated_at < ? OR (m.updated_at = ? AND m.id < ?))")
+            params.extend((after_time, after_time, after_id))
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.* FROM memories AS m
+                {'WHERE ' + ' AND '.join(where) if where else ''}
+                ORDER BY m.updated_at DESC, m.id DESC
+                LIMIT ?
+                """,
+                [*params, limit + 1],
+            ).fetchall()
+
+        memories = [_memory_from_row(row) for row in rows[:limit]]
+        next_cursor = (
+            _encode_cursor(memories[-1].updated_at, memories[-1].id)
+            if len(rows) > limit else None
+        )
+        return ListPage(memories=memories, next_cursor=next_cursor)
+
+    def contexts(self) -> list[ContextCount]:
+        """Distinct workspace/project/repo combinations of active memories."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.workspace, m.project, m.repo, COUNT(*) AS n
+                FROM memories AS m WHERE {_ACTIVE}
+                GROUP BY m.workspace, m.project, m.repo
+                ORDER BY n DESC, m.workspace, m.project, m.repo
+                """
+            ).fetchall()
+        return [
+            ContextCount(row["workspace"], row["project"], row["repo"], row["n"])
+            for row in rows
+        ]
 
     def search(
         self,
@@ -238,59 +576,69 @@ class MemBus:
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
 
-        context = {
-            "workspace": _clean_optional(workspace),
-            "project": _clean_optional(project),
-            "repo": _clean_optional(repo),
-            "branch": _clean_optional(branch),
-        }
-        _validate_context(context)
-        normalized_types = tuple(dict.fromkeys(_memory_type(value) for value in types))
+        context = _context_from(workspace, project, repo, branch)
+        normalized_types = _normalize_types(types)
+        scope = {"context": context, "types": normalized_types, "strict": strict}
 
-        exact = self._exact_candidates(
-            query,
-            context=context,
-            types=normalized_types,
-            limit=limit,
-            strict=strict,
-        )
+        exact = self._exact_candidates(query, limit=limit, **scope)
 
-        tokens = _extract_tokens(query)
+        tokens = _significant_tokens(_extract_tokens(query))[:_MAX_QUERY_TOKENS]
         fts_query = _build_fts_or_query(
             _expand_tokens(tokens, self._alias_map(tokens))
         )
         fts = (
             self._fts_candidates(
-                fts_query,
-                context=context,
-                types=normalized_types,
-                limit=limit + len(exact),
-                strict=strict,
+                fts_query, limit=limit + len(exact), **scope,
             )
             if fts_query is not None
             else []
         )
 
-        # Bounded Chinese n-gram substring fallback for reordered queries.
-        # Retains the existing FTS index and needs no extra dependency.
-        cjk = self._cjk_candidates(
-            query, context=context, types=normalized_types,
-            limit=limit + len(exact) + len(fts), strict=strict,
+        # Chinese has no word boundaries for unicode61, so recall comes from
+        # the trigram index.
+        trigrams = _cjk_ngrams(query, 3)[:12]
+        cjk = (
+            self._trigram_candidates(
+                trigrams, limit=limit + len(exact) + len(fts), **scope,
+            )
+            if trigrams
+            else []
         )
-        exact_preferred, exact_fallback = _partition_context(exact, context)
-        fts_preferred, fts_fallback = _partition_context(fts, context)
-        cjk_preferred, cjk_fallback = _partition_context(cjk, context)
+
+        partitions = [
+            _partition_context(group, context) for group in (exact, fts, cjk)
+        ]
+
+        def compatible_ids() -> set[str]:
+            return {m.id for preferred, _ in partitions for m in preferred}
+
+        # Last resorts, only while compatible results are short of `limit`:
+        # word-part substrings (Porter misses e.g. deploy/deployment) and
+        # separated Chinese bigrams (e.g. 支付部署).
+        stems = [
+            token for token in tokens
+            if len(token) >= 5 and not _HAN_RUN_RE.search(token)
+        ][:8]
+        if stems and len(compatible_ids()) < limit:
+            partitions.append(_partition_context(
+                self._trigram_candidates(
+                    stems, limit=limit + len(compatible_ids()), **scope,
+                ),
+                context,
+            ))
+        bigrams = _cjk_ngrams(query, 2)[:12]
+        if len(bigrams) >= 2 and len(compatible_ids()) < limit:
+            partitions.append(_partition_context(
+                self._cjk_bigram_candidates(
+                    bigrams, limit=limit + len(compatible_ids()), **scope,
+                ),
+                context,
+            ))
 
         results: list[Memory] = []
         seen: set[str] = set()
-        for group in (
-            exact_preferred,
-            fts_preferred,
-            cjk_preferred,
-            exact_fallback,
-            fts_fallback,
-            cjk_fallback,
-        ):
+        ordered = [p for p, _ in partitions] + [f for _, f in partitions]
+        for group in ordered:
             for memory in group:
                 if memory.id in seen:
                     continue
@@ -308,6 +656,10 @@ class MemBus:
             with contextlib.closing(sqlite3.connect(destination_path)) as target:
                 source.backup(target)
         return destination_path
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
     @contextlib.contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -347,14 +699,58 @@ class MemBus:
     def _initialize(self) -> None:
         with contextlib.closing(self._connect()) as conn:
             self._ensure_wal(conn)
+            if _schema_version(conn) == _SCHEMA_VERSION:
+                return
+
+        # Re-check under the write lock: another process may be initializing.
+        with self._transaction() as conn:
+            version = _schema_version(conn)
+            if version == _SCHEMA_VERSION:
+                return
+            has_tables = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'memories'"
+            ).fetchone()
+            if version != 0 or has_tables:
+                raise RuntimeError(
+                    f"{self.path} was created by an incompatible MemBus "
+                    f"schema (user_version={version}); export what you need "
+                    "and recreate the database."
+                )
             try:
-                conn.executescript(_SCHEMA)
+                for statement in _SCHEMA:
+                    conn.execute(statement)
             except sqlite3.OperationalError as exc:
-                if "fts5" in str(exc).lower():
+                message = str(exc).lower()
+                if "fts5" in message or "tokenizer" in message:
                     raise RuntimeError(
-                        "This SQLite build does not provide FTS5, which MemBus requires."
+                        "This SQLite build lacks FTS5 or its trigram "
+                        "tokenizer (SQLite >= 3.34 is required)."
                     ) from exc
                 raise
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+    def _similar_to(self, memory: Memory, *, ignore: set[str]) -> list[Memory]:
+        """Advisory near-duplicates among compatible active memories."""
+        text = f"{memory.title} {memory.content}"
+        candidates = self.search(
+            text[:500],
+            workspace=memory.workspace, project=memory.project,
+            repo=memory.repo, branch=memory.branch,
+            strict=True, limit=10,
+        )
+        mine = _similarity_tokens(text)
+        similar: list[Memory] = []
+        for other in candidates:
+            if other.id == memory.id or other.id in ignore:
+                continue
+            theirs = _similarity_tokens(f"{other.title} {other.content}")
+            shared = len(mine & theirs)
+            smaller = min(len(mine), len(theirs))
+            if shared >= 2 and smaller and shared / smaller >= 0.6:
+                similar.append(other)
+            if len(similar) >= _SIMILAR_LIMIT:
+                break
+        return similar
 
     def _exact_candidates(
         self,
@@ -365,32 +761,33 @@ class MemBus:
         limit: int,
         strict: bool,
     ) -> list[Memory]:
-        where = ["m.deleted_at IS NULL",
-            """
-            (
-                instr(lower(m.title), lower(?)) > 0
-                OR instr(lower(m.content), lower(?)) > 0
+        params: list[Any] = []
+        where = [_ACTIVE]
+        if len(query) >= 3:
+            source = (
+                "memory_trigram JOIN memories AS m "
+                "ON m.rid = memory_trigram.rowid"
             )
-            """
-        ]
-        params: list[Any] = [query, query]
-        _append_type_filter(where, params, types)
-        if strict:
-            _append_strict_context(where, params, context)
-        context_order, context_params = _context_order(context)
-
-        with self._connection() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT m.*
-                FROM memories AS m
-                WHERE {' AND '.join(where)}
-                ORDER BY {context_order}, m.id ASC
-                LIMIT ?
-                """,
-                [*params, *context_params, limit],
-            ).fetchall()
-        return [_memory_from_row(row) for row in rows]
+            where.insert(0, "memory_trigram MATCH ?")
+            params.append(_fts_phrase(query))
+        elif _HAN_RUN_RE.search(query):
+            # Short Han words have no token boundary for the word index and
+            # are below one trigram, so this is the one remaining scan.
+            source = "memories AS m"
+            where.append(
+                "(instr(lower(m.title), ?) > 0 "
+                "OR instr(lower(m.content), ?) > 0)"
+            )
+            params.extend((query, query))
+        else:
+            # 1-2 ASCII characters (e.g. "uv", "pg"): whole-token matches are
+            # served by the word index; substring scanning 100k rows is not
+            # worth it.
+            return []
+        return self._run_candidates(
+            source, where, params, order="m.updated_at DESC, m.id ASC",
+            context=context, types=types, limit=limit, strict=strict,
+        )
 
     def _fts_candidates(
         self,
@@ -401,75 +798,100 @@ class MemBus:
         limit: int,
         strict: bool,
     ) -> list[Memory]:
-        where = ["memory_fts MATCH ?", "m.deleted_at IS NULL"]
-        params: list[Any] = [match_query]
-        _append_type_filter(where, params, types)
-        if strict:
-            _append_strict_context(where, params, context)
-        context_order, context_params = _context_order(context)
+        return self._run_candidates(
+            "memory_fts JOIN memories AS m ON m.rid = memory_fts.rowid",
+            ["memory_fts MATCH ?", _ACTIVE], [match_query],
+            order="bm25(memory_fts) ASC, m.id ASC",
+            context=context, types=types, limit=limit, strict=strict,
+        )
 
-        with self._connection() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT m.*
-                FROM memory_fts
-                JOIN memories AS m ON m.id = memory_fts.memory_id
-                WHERE {' AND '.join(where)}
-                ORDER BY {context_order}, bm25(memory_fts) ASC, m.id ASC
-                LIMIT ?
-                """,
-                [*params, *context_params, limit],
-            ).fetchall()
-        return [_memory_from_row(row) for row in rows]
-
-    def _cjk_candidates(
+    def _trigram_candidates(
         self,
-        query: str,
+        phrases: list[str],
         *,
         context: dict[str, str | None],
         types: tuple[str, ...],
         limit: int,
         strict: bool,
     ) -> list[Memory]:
-        # One 3-gram retrieves words inside reordered Chinese sentences;
-        # two 2-grams retrieve separated short words, e.g. "支付部署".
-        trigrams = _cjk_ngrams(query, 3)[:12]
-        bigrams = _cjk_ngrams(query, 2)[:12]
-        if not trigrams and len(bigrams) < 2:
-            return []
+        return self._run_candidates(
+            "memory_trigram JOIN memories AS m "
+            "ON m.rid = memory_trigram.rowid",
+            ["memory_trigram MATCH ?", _ACTIVE],
+            [" OR ".join(_fts_phrase(phrase) for phrase in phrases)],
+            order="bm25(memory_trigram) ASC, m.id ASC",
+            context=context, types=types, limit=limit, strict=strict,
+        )
 
-        score_terms: list[str] = []
-        score_params: list[str] = []
-        for weight, grams in ((4, trigrams), (1, bigrams)):
-            for gram in grams:
-                score_terms.append(
-                    "(CASE WHEN instr(m.title, ?) > 0 "
-                    f"OR instr(m.content, ?) > 0 THEN {weight} ELSE 0 END)"
-                )
-                score_params.extend((gram, gram))
-        score_sql = " + ".join(score_terms)
-        where = ["m.deleted_at IS NULL"]
+    def _cjk_bigram_candidates(
+        self,
+        bigrams: list[str],
+        *,
+        context: dict[str, str | None],
+        types: tuple[str, ...],
+        limit: int,
+        strict: bool,
+    ) -> list[Memory]:
+        # Separated short words, e.g. "支付部署": at least two bigrams must hit.
+        hit_sql = " + ".join(
+            "(instr(m.title, ?) > 0 OR instr(m.content, ?) > 0)"
+            for _ in bigrams
+        )
+        hit_params = [gram for gram in bigrams for _ in (0, 1)]
+        where = [_ACTIVE]
         params: list[Any] = []
         _append_type_filter(where, params, types)
         if strict:
             _append_strict_context(where, params, context)
-        context_order, context_params = _context_order(context)
+        order_terms, order_params = _context_order(context)
+        order = ", ".join([*order_terms, "m.hits DESC", "m.id ASC"])
 
-        # Bounded to 24 query grams and parameterized throughout.
         with self._connection() as conn:
             rows = conn.execute(
                 f"""
-                SELECT m.*, ({score_sql}) AS cjk_score
-                FROM memories AS m
-                WHERE {' AND '.join(where)}
-                ORDER BY cjk_score DESC, {context_order}, m.id ASC
+                SELECT m.* FROM (
+                    SELECT m.*, ({hit_sql}) AS hits
+                    FROM memories AS m WHERE {' AND '.join(where)}
+                ) AS m
+                WHERE m.hits >= 2
+                ORDER BY {order}
                 LIMIT ?
                 """,
-                [*score_params, *params, *context_params, limit],
+                [*hit_params, *params, *order_params, limit],
             ).fetchall()
-        return [
-            _memory_from_row(row) for row in rows if row["cjk_score"] >= 2
-        ]
+        return [_memory_from_row(row) for row in rows]
+
+    def _run_candidates(
+        self,
+        source: str,
+        where: list[str],
+        params: list[Any],
+        *,
+        order: str,
+        context: dict[str, str | None],
+        types: tuple[str, ...],
+        limit: int,
+        strict: bool,
+    ) -> list[Memory]:
+        where = list(where)
+        params = list(params)
+        _append_type_filter(where, params, types)
+        if strict:
+            _append_strict_context(where, params, context)
+        order_terms, order_params = _context_order(context)
+        order_by = ", ".join([*order_terms, order])
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.* FROM {source}
+                WHERE {' AND '.join(where)}
+                ORDER BY {order_by}
+                LIMIT ?
+                """,
+                [*params, *order_params, limit],
+            ).fetchall()
+        return [_memory_from_row(row) for row in rows]
 
     def _alias_map(self, tokens: Iterable[str]) -> dict[str, str]:
         normalized = tuple(dict.fromkeys(token.casefold() for token in tokens if token))
@@ -518,8 +940,79 @@ class MemBus:
         raise last_error
 
 
+def _schema_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _normalize_timestamp(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        raise ValueError(f"invalid timestamp: {value!r}") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (
+        parsed.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _encode_cursor(updated_at: str, memory_id: str) -> str:
+    raw = json.dumps([updated_at, memory_id]).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        updated_at, memory_id = json.loads(base64.urlsafe_b64decode(cursor))
+        if isinstance(updated_at, str) and isinstance(memory_id, str):
+            return updated_at, memory_id
+    except (ValueError, TypeError):
+        pass
+    raise ValueError("invalid cursor")
+
+
+def _release_superseded(
+    conn: sqlite3.Connection, successor_id: str, now: str,
+) -> None:
+    """Un-supersede memories whose successor was deleted or purged.
+
+    A revived memory that would now duplicate another active memory stays
+    superseded, by that memory, so the active-hash index stays unique.
+    """
+    rows = conn.execute(
+        "SELECT id, content_hash, deleted_at FROM memories "
+        "WHERE superseded_by = ?",
+        (successor_id,),
+    ).fetchall()
+    for row in rows:
+        replacement = None
+        if row["deleted_at"] is None:
+            clash = _active_clash(conn, row["content_hash"], row["id"])
+            replacement = clash["id"] if clash is not None else None
+        conn.execute(
+            """
+            UPDATE memories SET superseded_by = ?, updated_at = ?,
+                version = version + 1
+            WHERE id = ?
+            """,
+            (replacement, now, row["id"]),
+        )
+
+
+def _active_clash(
+    conn: sqlite3.Connection, content_hash: str, own_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        f"SELECT m.* FROM memories AS m "
+        f"WHERE m.content_hash = ? AND m.id <> ? AND {_ACTIVE}",
+        (content_hash, own_id),
+    ).fetchone()
 
 
 def _normalize_memory_values(
@@ -533,12 +1026,19 @@ def _normalize_memory_values(
     branch: str | None,
     source: str | None,
 ) -> dict[str, Any]:
+    if not isinstance(content, str) or not isinstance(title, str):
+        raise ValueError("title and content must be strings")
     content = content.strip()
+    title = title.strip()
     if not content:
         raise ValueError("content must contain non-whitespace text")
+    if len(content) > _MAX_CONTENT:
+        raise ValueError(f"content exceeds {_MAX_CONTENT} characters")
+    if len(title) > _MAX_TITLE:
+        raise ValueError(f"title exceeds {_MAX_TITLE} characters")
 
     values: dict[str, Any] = {
-        "title": title.strip(),
+        "title": title,
         "content": content,
         "memory_type": _memory_type(memory_type),
         "workspace": _clean_optional(workspace),
@@ -551,11 +1051,45 @@ def _normalize_memory_values(
     return values
 
 
+def _content_hash(values: dict[str, Any]) -> str:
+    parts = (
+        _normalize_text(values[field] or "")
+        for field in (
+            "memory_type", "workspace", "project", "repo", "branch",
+            "title", "content",
+        )
+    )
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+
+
 def _memory_type(value: str) -> str:
     value = str(value)
     if value not in _MEMORY_TYPES:
-        raise ValueError(f"Unsupported memory type: {value!r}")
+        raise ValueError(
+            f"Unsupported memory type: {value!r}; "
+            f"expected one of {sorted(_MEMORY_TYPES)}"
+        )
     return value
+
+
+def _normalize_types(types: Iterable[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(_memory_type(value) for value in types))
+
+
+def _context_from(
+    workspace: str | None,
+    project: str | None,
+    repo: str | None,
+    branch: str | None,
+) -> dict[str, str | None]:
+    context = {
+        "workspace": _clean_optional(workspace),
+        "project": _clean_optional(project),
+        "repo": _clean_optional(repo),
+        "branch": _clean_optional(branch),
+    }
+    _validate_context(context)
+    return context
 
 
 def _validate_context(values: dict[str, Any]) -> None:
@@ -591,46 +1125,24 @@ def _append_strict_context(
 
 def _context_order(
     context: dict[str, str | None],
-) -> tuple[str, list[Any]]:
-    conflict_terms: list[str] = []
-    match_terms: list[str] = []
+) -> tuple[list[str], list[Any]]:
+    """ORDER BY terms: fewest conflicts first, then most matches."""
+    conflicts: list[str] = []
+    matches: list[str] = []
     params: list[Any] = []
-
     for column in _CONTEXT_FIELDS:
         value = context[column]
         if value is None:
             continue
-        conflict_terms.append(
-            f"CASE WHEN m.{column} IS NOT NULL AND m.{column} <> ? THEN 1 ELSE 0 END"
-        )
+        conflicts.append(f"(m.{column} IS NOT NULL AND m.{column} <> ?)")
+        matches.append(f"CASE WHEN m.{column} = ? THEN 1 ELSE 0 END")
         params.append(value)
-
-    conflict_param_count = len(params)
-
-    for column in _CONTEXT_FIELDS:
-        value = context[column]
-        if value is None:
-            continue
-        match_terms.append(
-            f"CASE WHEN m.{column} = ? THEN 1 ELSE 0 END"
-        )
-        params.append(value)
-
-    conflicts = (
-        " + ".join(conflict_terms)
-        if conflict_terms
-        else "CASE WHEN 1 THEN 0 END"
+    if not params:
+        return [], []
+    return (
+        [f"({' + '.join(conflicts)}) ASC", f"({' + '.join(matches)}) DESC"],
+        params + params,
     )
-    matches = (
-        " + ".join(match_terms)
-        if match_terms
-        else "CASE WHEN 1 THEN 0 END"
-    )
-
-    # Keep the explicit variable so the parameter order is obvious:
-    # conflict placeholders first, then match placeholders.
-    assert conflict_param_count <= len(params)
-    return f"({conflicts}) ASC, ({matches}) DESC", params
 
 
 def _partition_context(
@@ -667,6 +1179,11 @@ def _extract_tokens(query: str) -> list[str]:
     return list(dict.fromkeys(match.group(0) for match in _TOKEN_RE.finditer(query)))
 
 
+def _significant_tokens(tokens: list[str]) -> list[str]:
+    kept = [token for token in tokens if token not in _STOPWORDS]
+    return kept or tokens
+
+
 def _cjk_ngrams(query: str, size: int) -> list[str]:
     return list(dict.fromkeys(
         run[i:i + size]
@@ -674,6 +1191,11 @@ def _cjk_ngrams(query: str, size: int) -> list[str]:
         for run in (match.group(0),)
         for i in range(len(run) - size + 1)
     ))
+
+
+def _similarity_tokens(text: str) -> set[str]:
+    folded = text.casefold()
+    return set(_extract_tokens(folded)) | set(_cjk_ngrams(folded, 2))
 
 
 def _expand_tokens(tokens: Iterable[str], aliases: dict[str, str]) -> list[str]:
@@ -687,12 +1209,12 @@ def _expand_tokens(tokens: Iterable[str], aliases: dict[str, str]) -> list[str]:
     return expanded
 
 
+def _fts_phrase(text: str) -> str:
+    return '"' + text.replace('"', '""') + '"'
+
+
 def _build_fts_or_query(tokens: Iterable[str]) -> str | None:
-    parts = [
-        f'"{token.replace(chr(34), chr(34) * 2)}"'
-        for token in tokens
-        if token
-    ]
+    parts = [_fts_phrase(token) for token in tokens if token]
     return " OR ".join(parts) if parts else None
 
 

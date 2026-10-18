@@ -21,4 +21,6 @@ jobs:
       - name: Test
         run: pytest -q
       - name: Golden retrieval gate
-        run: python tools/evaluate.py evals/golden_v1.json --min-recall-5 0.95 --min-recall-10 0.95 --max-context-preference-error-rate 0.0
+        run: python tools/evaluate.py evals/golden_v1.json --min-recall-5 0.95 --min-recall-10 0.95 --max-context-preference-error-rate 0.0 --max-superseded-leak-rate 0.0
+      - name: Scale latency gate (100k memories)
+        run: python tools/evaluate.py evals/golden_v1.json --scale 100000 --max-p95-ms 100

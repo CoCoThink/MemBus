@@ -1,8 +1,10 @@
 # MemBus
 
-**MemBus** is a user-owned local memory store for AI agents.
+**MemBus** is a user-owned local memory bus for AI agents.
 
-Claude Code, Codex, Cursor, ChatGPT, and other MCP clients can share one SQLite store without making any agent vendor the system of record.
+Claude Code, Codex, Cursor, ChatGPT, and other MCP clients share one SQLite store: each agent can load what applies to its current context, see what others recorded, and keep shared memory current without duplicating or silently overwriting it. No agent vendor is the system of record.
+
+> **Status:** V1 is implemented. Design rationale and measured trade-offs are in [Architecture → Design decisions](docs/architecture.md#design-decisions).
 
 ## Core
 
@@ -16,62 +18,48 @@ MCP / CLI
  SQLite
  ├─ memories
  ├─ aliases
- └─ FTS5
+ ├─ memory_fts      (words, Porter stemming)
+ └─ memory_trigram  (substrings, Chinese)
 ```
 
-Canonical memory stores the following fields:
+A memory has a title, content (≤ 4000 chars), a type (`fact | decision | preference | procedure | incident | note`), optional `workspace / project / repo / branch` context, an optional `source` label, a `version`, UTC timestamps, and a lifecycle state:
 
 ```text
-id
-title
-content
-memory_type
-workspace
-project
-repo
-branch
-source
-created_at
-updated_at
-deleted_at
+active ──update (expected_version)──► active
+active ──put(supersedes=[id])──────► superseded   (the world changed)
+active ──delete────────────────────► deleted ──restore──► active
 ```
 
-Timestamps use UTC ISO-8601. `source` is an optional user-supplied label, not a verified identity. Deletion is recoverable and excluded from normal reads/search, with no edit revision history.
+Identical content in the same context is stored once: `put` is idempotent and also returns `similar` near-matches so the agent can update or supersede instead of duplicating.
 
 ## Retrieval
 
 ```text
 query
-  ├─ exact full-query substring
-  ├─ tokens -> aliases -> FTS5/BM25
-  └─ Chinese 2/3-gram fallback
+  ├─ exact substring        (trigram index)
+  ├─ words → stopwords out → aliases → FTS5/BM25 (Porter)
+  ├─ Chinese 3-grams        (trigram index)
+  └─ last resorts when results are short: word parts (deploy → deployment),
+     Han bigrams
           │
           ▼
-      context filter
+ compatible context first, conflicting as fallback (strict=True: compatible only)
           │
           ▼
- exact first, then FTS
-          │
-          ▼
-        Top-K
+        Top-K over active memories
 ```
 
-Python, CLI, and MCP searches all default to broad context preference (`strict=False`): matching context ranks first, and conflicting memories may be returned as fallback. Set `strict=True` (or CLI `--strict`) to return only compatible memories, rejecting conflicts and more-specific memories where query context is missing. Broad results are not automatically applicable to the current task; check their context before acting. Neither mode implements access control.
-
-Chinese text uses bounded, parameterized 2/3-character substring matching as a low-priority recall fallback when full-query substring and unicode61 FTS miss rearranged Chinese phrases. This scans the local SQLite memory table; no new index or dependency is required. It is lexical matching, not semantic understanding.
+`list` enumerates memories that apply to a context, newest first, with `updated_since` for "what changed since my last session". All lexical; no LLM, embedding model, or hosted service.
 
 ## MCP tools
 
 ```text
-memory_put
-memory_get
-memory_update
-memory_delete
-memory_restore
-memory_search
+memory_search     memory_get       memory_delete
+memory_list       memory_put       memory_restore
+memory_contexts   memory_update
 ```
 
-Local agents and ChatGPT through Secure MCP Tunnel use the same six tools.
+Tool descriptions and server instructions follow the [agent protocol](docs/agent-protocol.md). Local agents and ChatGPT through Secure MCP Tunnel use the same tools; every connected client is trusted with full access.
 
 ## Quick start
 
@@ -88,11 +76,9 @@ membus --db ./memory.db put \
   --repo payment-api
 
 membus --db ./memory.db search "generated/client.ts" \
-  --project payment \
-  --repo payment-api
+  --project payment --repo payment-api
 
-# --strict filters conflicting or narrower context memories.
-# Delete is recoverable: membus --db ./memory.db restore MEM_ID
+membus --db ./memory.db list --project payment --repo payment-api
 membus --db ./memory.db backup ./backup.db
 ```
 
@@ -104,46 +90,38 @@ MEMBUS_DB=./memory.db membus-mcp
 
 ## Reliability
 
-The small core still keeps the engineering controls that have demonstrated value:
-
-- SQLite WAL
-- busy timeout and bounded busy retry
-- `BEGIN IMMEDIATE` for writes
-- multi-process writer stress coverage
+- SQLite WAL, busy timeout, bounded retry, `BEGIN IMMEDIATE`
+- optimistic concurrency (`expected_version`) for updates
+- content-hash unique index for idempotent writes
 - FTS synchronization triggers
-- SQLite backup API
-- `membus doctor`
-- Python 3.11 / 3.12 CI
-- MCP round-trip tests
-- isolated Golden Retrieval Evaluation
-
-Run the repository evaluation tool:
+- SQLite backup API, `membus doctor`, CLI-only `purge`
+- multi-process writer stress tests, MCP round-trip tests
+- isolated Golden Retrieval Evaluation with a 100k-memory latency run
 
 ```bash
 python tools/evaluate.py evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
-  --max-context-preference-error-rate 0.0
+  --max-context-preference-error-rate 0.0 \
+  --max-superseded-leak-rate 0.0
 ```
 
 Deliberately absent until real failures justify them:
 
-- schema compatibility migrations (pre-deployment databases should be recreated)
-- edit revision history
-- runtime retrieval logging
-- batch/search-many API
-- embeddings/vector DB
-- graph DB
+- revision history
+- per-client permissions / ACL / multi-user tenancy
+- runtime retrieval logging, batch search
+- embeddings/vector DB, graph DB
 - LLM query rewrite/rerank
 - automatic memory extraction/consolidation
-- ACL/multi-user tenancy
-- distributed storage
+- push subscriptions, distributed storage
 
 See:
 
 - [Requirements](docs/requirements.md)
 - [Architecture](docs/architecture.md)
 - [V1 technical specification](docs/v1-technical-spec.md)
+- [Agent protocol](docs/agent-protocol.md)
 - [Retrieval evaluation](docs/evaluation.md)
 - [ChatGPT Secure MCP Tunnel integration](docs/chatgpt-secure-tunnel.md)
 - [Secure MCP Tunnel deployment runbook](docs/secure-tunnel-deployment.md)

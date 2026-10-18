@@ -74,7 +74,11 @@ They are not baseline dependencies.
 
 ## Current MemBus conclusion
 
-The runtime intentionally remains:
+The V1 design (see [architecture](architecture.md)) adopts a few more of the lessons above, each tied to a review finding rather than to a reference system:
+
+- from sqlite-memory-mcp: keep SQLite/WAL/FTS5; add a trigram FTS index instead of a segmenter;
+- from Mem0: avoid blindly duplicating durable facts — content-hash idempotent put plus advisory `similar`, with the agent (not MemBus) deciding to update or supersede;
+- from Graphiti: only the minimal temporal idea — explicit supersession — without validity intervals or a graph.
 
 ```text
 MCP / CLI
@@ -84,33 +88,13 @@ MCP / CLI
     │
     ▼
  SQLite
- ├─ memories
+ ├─ memories   (version, content_hash, superseded_by)
  ├─ aliases
- └─ FTS5
+ ├─ memory_fts      (porter)
+ └─ memory_trigram  (trigram)
 ```
 
-Canonical memory is:
-
-```text
-id
-title
-content
-memory_type
-workspace
-project
-repo
-branch
-```
-
-Retrieval is:
-
-```text
-exact candidates first
-then alias-expanded FTS5/BM25
-with SQL context isolation
-```
-
-There is no current ranking subsystem, provenance layer, history layer, graph, embedding index, extraction pipeline, or adapter-independent service hierarchy.
+Still absent: ranking subsystem, revision history, graph, embedding index, extraction pipeline, adapter-independent service hierarchy.
 
 ## Future rule
 

@@ -20,7 +20,9 @@ def run_doctor(bus: MemBus) -> dict[str, Any]:
         ("journal_mode", lambda: _check_wal(bus)),
         ("fts5", lambda: _check_fts5(bus)),
         ("integrity", lambda: _check_integrity(bus)),
-        ("fts_consistency", lambda: _check_fts_consistency(bus)),
+        ("fts_consistency", lambda: _check_index(bus, "fts_consistency", "memory_fts")),
+        ("trigram_consistency", lambda: _check_index(bus, "trigram_consistency", "memory_trigram")),
+        ("supersession", lambda: _check_supersession(bus)),
         ("write_transaction", lambda: _check_write_transaction(bus)),
     )
 
@@ -59,10 +61,14 @@ def _check_fts5(bus: MemBus) -> dict[str, Any]:
             "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH ?",
             ('"membus-doctor-token"',),
         ).fetchone()
+        conn.execute(
+            "SELECT COUNT(*) FROM memory_trigram WHERE memory_trigram MATCH ?",
+            ('"doctor"',),
+        ).fetchone()
     return {
         "name": "fts5",
         "ok": True,
-        "detail": "FTS5 MATCH query succeeded",
+        "detail": "FTS5 word and trigram MATCH queries succeeded",
     }
 
 
@@ -77,37 +83,36 @@ def _check_integrity(bus: MemBus) -> dict[str, Any]:
     }
 
 
-def _check_fts_consistency(bus: MemBus) -> dict[str, Any]:
+def _check_index(bus: MemBus, name: str, table: str) -> dict[str, Any]:
+    """An FTS table must hold exactly the active memories, keyed by rid."""
+    active = "m.deleted_at IS NULL AND m.superseded_by IS NULL"
     with bus._connection() as conn:
-        memory_count = int(conn.execute("SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL").fetchone()[0])
-        fts_count = int(conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0])
-        missing = int(
-            conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM memories AS m
-                LEFT JOIN memory_fts AS f ON f.memory_id = m.id
-                WHERE m.deleted_at IS NULL AND f.memory_id IS NULL
-                """
-            ).fetchone()[0]
-        )
-        orphaned = int(
-            conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM memory_fts AS f
-                LEFT JOIN memories AS m ON m.id = f.memory_id
-                WHERE m.id IS NULL OR m.deleted_at IS NOT NULL
-                """
-            ).fetchone()[0]
-        )
+        memory_count = int(conn.execute(
+            f"SELECT COUNT(*) FROM memories AS m WHERE {active}"
+        ).fetchone()[0])
+        fts_count = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        missing = int(conn.execute(
+            f"""
+            SELECT COUNT(*) FROM memories AS m
+            LEFT JOIN {table} AS f ON f.rowid = m.rid
+            WHERE {active} AND f.rowid IS NULL
+            """
+        ).fetchone()[0])
+        orphaned = int(conn.execute(
+            f"""
+            SELECT COUNT(*) FROM {table} AS f
+            LEFT JOIN memories AS m ON m.rid = f.rowid
+            WHERE m.rid IS NULL
+               OR m.deleted_at IS NOT NULL OR m.superseded_by IS NOT NULL
+            """
+        ).fetchone()[0])
 
     ok = memory_count == fts_count and missing == 0 and orphaned == 0
     return {
-        "name": "fts_consistency",
+        "name": name,
         "ok": ok,
         "detail": (
-            "canonical and FTS rows are synchronized"
+            f"{table} matches active memories"
             if ok
             else (
                 f"memory_count={memory_count}, fts_count={fts_count}, "
@@ -120,6 +125,37 @@ def _check_fts_consistency(bus: MemBus) -> dict[str, Any]:
             "missing": missing,
             "orphaned": orphaned,
         },
+    }
+
+
+def _check_supersession(bus: MemBus) -> dict[str, Any]:
+    with bus._connection() as conn:
+        dangling = int(conn.execute(
+            """
+            SELECT COUNT(*) FROM memories AS m
+            LEFT JOIN memories AS s ON s.id = m.superseded_by
+            WHERE m.superseded_by IS NOT NULL AND s.id IS NULL
+            """
+        ).fetchone()[0])
+        duplicates = int(conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT content_hash FROM memories
+                WHERE deleted_at IS NULL AND superseded_by IS NULL
+                GROUP BY content_hash HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0])
+    ok = dangling == 0 and duplicates == 0
+    return {
+        "name": "supersession",
+        "ok": ok,
+        "detail": (
+            "no dangling supersession links or active duplicates"
+            if ok
+            else f"dangling={dangling}, active_duplicates={duplicates}"
+        ),
+        "data": {"dangling": dangling, "active_duplicates": duplicates},
     }
 
 

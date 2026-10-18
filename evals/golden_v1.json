@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Initial lexical-first retrieval baseline for MemBus V1.",
+  "description": "Lexical-first retrieval baseline for MemBus V1: context preference, supersession, idempotent puts, morphology, Chinese, and list applicability.",
   "aliases": [
     {
       "alias": "pg",
@@ -133,7 +133,7 @@
       "memory": {
         "title": "Websocket proxy incident",
         "content": "Enabling the proxy on the websocket endpoint caused connection resets during long-lived sessions.",
-        "memory_type": "failure",
+        "memory_type": "incident",
         "workspace": "work",
         "project": "payment",
         "repo": "payment-api"
@@ -204,6 +204,53 @@
         "content": "支付服务需要完成检查之后才能进行部署。",
         "memory_type": "procedure",
         "project": "chinese-demo"
+      }
+    },
+    {
+      "key": "release_cadence_old",
+      "memory": {
+        "title": "Release cadence",
+        "content": "Release cadence: payment releases ship every two weeks on Friday.",
+        "memory_type": "decision",
+        "workspace": "work",
+        "project": "payment"
+      }
+    },
+    {
+      "key": "release_cadence_new",
+      "supersedes": [
+        "release_cadence_old"
+      ],
+      "memory": {
+        "title": "Release cadence",
+        "content": "Release cadence: payment releases now ship weekly on Tuesday morning.",
+        "memory_type": "decision",
+        "workspace": "work",
+        "project": "payment"
+      }
+    },
+    {
+      "key": "release_cadence_repeat",
+      "same_as": "release_cadence_new"
+    },
+    {
+      "key": "quarter_freeze",
+      "memory": {
+        "title": "Quarter close freeze",
+        "content": "Deployment freeze applies during the quarter close; no production changes.",
+        "memory_type": "procedure",
+        "workspace": "work",
+        "project": "payment"
+      }
+    },
+    {
+      "key": "retry_backoff",
+      "memory": {
+        "title": "Settlement retry policy",
+        "content": "Payment workers retry failed settlements with exponential backoff and jitter.",
+        "memory_type": "procedure",
+        "workspace": "work",
+        "project": "payment"
       }
     }
   ],
@@ -503,6 +550,172 @@
       },
       "expected": [
         "zh_payment_deployment"
+      ]
+    },
+    {
+      "name": "superseded decision is replaced",
+      "query": "release cadence",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "release_cadence_new"
+      ],
+      "absent": [
+        "release_cadence_old"
+      ]
+    },
+    {
+      "name": "superseded wording does not leak",
+      "query": "biweekly Friday release",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "release_cadence_new"
+      ],
+      "absent": [
+        "release_cadence_old"
+      ]
+    },
+    {
+      "name": "english inflection",
+      "query": "retries failing settlement",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "retry_backoff"
+      ]
+    },
+    {
+      "name": "word-part fallback deploy/deployment",
+      "query": "how should we deploy",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "quarter_freeze"
+      ]
+    },
+    {
+      "name": "natural-language question",
+      "query": "what should the retry policy be",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "retry_backoff"
+      ]
+    },
+    {
+      "name": "question words around identifier",
+      "query": "how do we handle reconcilePayment",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "bug_18472"
+      ]
+    }
+  ],
+  "list_cases": [
+    {
+      "name": "workspace/project applicability",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "expected": [
+        "python_uv",
+        "claude_code_rule",
+        "redis_runbook",
+        "context_project_fallback",
+        "bug_18472",
+        "settlement_idempotency",
+        "payment_pool_incident",
+        "payment_pg17",
+        "no_kubernetes",
+        "repo_project_fallback",
+        "release_cadence_new",
+        "quarter_freeze",
+        "retry_backoff"
+      ],
+      "absent": [
+        "generated_client",
+        "payment_deploy",
+        "websocket_failure",
+        "repo_specific_rule",
+        "analytics_pg15",
+        "personal_payment_sqlite",
+        "context_personal_specific",
+        "zh_client_generation",
+        "zh_payment_deployment",
+        "release_cadence_old"
+      ]
+    },
+    {
+      "name": "repo adds repo-specific memories",
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "expected": [
+        "generated_client",
+        "payment_deploy",
+        "websocket_failure",
+        "repo_specific_rule",
+        "bug_18472",
+        "python_uv"
+      ],
+      "absent": [
+        "analytics_pg15",
+        "personal_payment_sqlite",
+        "release_cadence_old"
+      ]
+    },
+    {
+      "name": "inactive memories are opt-in",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "types": [
+        "decision"
+      ],
+      "include_inactive": true,
+      "expected": [
+        "release_cadence_old",
+        "release_cadence_new",
+        "settlement_idempotency",
+        "no_kubernetes"
+      ],
+      "absent": [
+        "bug_18472"
+      ]
+    },
+    {
+      "name": "superseded excluded by default",
+      "context": {
+        "workspace": "work",
+        "project": "payment"
+      },
+      "types": [
+        "decision"
+      ],
+      "expected": [
+        "release_cadence_new",
+        "settlement_idempotency"
+      ],
+      "absent": [
+        "release_cadence_old"
       ]
     }
   ]
