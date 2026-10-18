@@ -32,7 +32,7 @@ It should grow from real retrieval failures.
 - **Recall@5 / Recall@10** — expected memories retrieved in Top-K.
 - **MRR** — rank of the first expected memory.
 - **Zero-result rate** — queries returning nothing.
-- **Wrong-context hit rate** — forbidden cross-context memories appearing in Top-10.
+- **Context-preference error rate** — a lower-priority context result ranking ahead of an expected preferred-context result.
 - **Latency P50 / P95** — in-process `MemBus.search` regression indicators.
 
 ## Run
@@ -49,7 +49,7 @@ Apply CI-style gates:
 python tools/evaluate.py evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
-  --max-wrong-context-rate 0.0
+  --max-context-preference-error-rate 0.0
 ```
 
 A failed threshold exits with status 2.
@@ -59,7 +59,7 @@ A failed threshold exits with status 2.
 When a real query fails:
 
 1. reduce it to the smallest representative fixture;
-2. add stable expected/forbidden keys;
+2. add stable expected/lower-priority keys;
 3. prove the case fails before changing retrieval;
 4. fix retrieval;
 5. keep the regression permanently.
