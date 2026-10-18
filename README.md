@@ -51,7 +51,7 @@ query
         Top-K
 ```
 
-Every non-empty context value stored on a memory must also be present and equal in the query context. In other words, `memory_context ⊆ query_context`.
+Context is a retrieval preference, not an access boundary. Matching current context is ranked first; conflicting context remains available as fallback. Missing query context broadens retrieval instead of excluding more-specific memories.
 
 ## MCP tools
 
@@ -113,7 +113,7 @@ Run the repository evaluation tool:
 python tools/evaluate.py evals/golden_v1.json \
   --min-recall-5 0.95 \
   --min-recall-10 0.95 \
-  --max-wrong-context-rate 0.0
+  --max-context-preference-error-rate 0.0
 ```
 
 Deliberately absent until real failures justify them:
