@@ -28,7 +28,11 @@ CREATE TABLE memories (
     workspace TEXT,
     project TEXT,
     repo TEXT,
-    branch TEXT
+    branch TEXT,
+    source TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
 );
 
 CREATE TABLE aliases (
@@ -37,7 +41,7 @@ CREATE TABLE aliases (
 );
 ```
 
-FTS5 stores `memory_id/title/content`; triggers synchronize insert, title/content update, and delete.
+FTS5 stores live `memory_id/title/content`; triggers synchronize insert, title/content update, soft-delete and restore. UTC timestamps are stored as ISO-8601 text.
 
 ## Context
 
@@ -54,7 +58,7 @@ branch
 
 Branch context requires repo context.
 
-Context is not an eligibility boundary. Query-provided context creates discrete preference tiers: memories with no conflicts are returned first, conflicting memories remain fallback candidates, and missing query context dimensions do not filter results.
+Broad mode (`strict=False`) uses preference tiers with fallback. Strict mode (`strict=True`) excludes conflicting and narrower-than-query memories before top-K candidate limits. Python/CLI default to broad; MCP defaults to strict. Neither implements authentication or authorization.
 
 ## Transactions
 
@@ -102,8 +106,9 @@ bus = MemBus(path)
 bus.put(...)
 bus.get(...)
 bus.update(...)
-bus.delete(...)
-bus.search(...)
+bus.delete(...)    # soft-delete
+bus.restore(...)
+bus.search(..., strict=True)
 bus.put_alias(...)
 bus.backup(...)
 ```
@@ -117,6 +122,7 @@ memory_put
 memory_get
 memory_update
 memory_delete
+memory_restore
 memory_search
 ```
 

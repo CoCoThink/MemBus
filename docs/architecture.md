@@ -31,6 +31,10 @@ workspace
 project
 repo
 branch
+source
+created_at
+updated_at
+deleted_at
 ```
 
 Context specificity is implicit:
@@ -67,7 +71,7 @@ then FTS BM25
 Top-K
 ```
 
-Context is soft retrieval metadata. Query-provided context prefers memories that match those dimensions, while conflicting memories remain fallback candidates. A missing query context dimension does not filter anything.
+With `strict=False`, context remains a preference; conflicting candidates may be returned. With `strict=True`, filtering occurs in SQL before LIMIT and requires stored context values to be either absent or equal to explicitly supplied query dimensions. Missing query dimensions accept only absent stored dimensions. MCP defaults to strict; Python/CLI default to broad. This is applicability filtering, not ACL.
 
 There is no numeric scoring layer, recency signal, title boost, explain mode, or multi-query fusion. Context uses discrete preference tiers only.
 
@@ -85,7 +89,7 @@ FTS trigger
 commit
 ```
 
-Delete is physical.
+Delete is recoverable: `delete` sets `deleted_at`, `restore` clears it. FTS triggers index only live memories. Every write updates `updated_at` while retaining `created_at`; `source` is only a label.
 
 ## Runtime responsibilities
 
@@ -109,7 +113,7 @@ There is no Database, Repository, Store interface, Service layer, or separate re
 Add new machinery only for a measured failure:
 
 - compatibility migrations
-- history/soft delete
+- edit revision history
 - runtime retrieval logs
 - batch retrieval
 - calibrated ranking

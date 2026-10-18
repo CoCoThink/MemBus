@@ -109,13 +109,14 @@ In a ChatGPT workspace that supports custom MCP servers and has the required tun
 5. Verify a read first with `memory_search`.
 6. Verify a write with a harmless test memory, then remove it with `memory_delete`.
 
-ChatGPT should see the same five tools as local MCP clients:
+ChatGPT should see the same six tools as local MCP clients:
 
 ```text
 memory_put
 memory_get
 memory_update
 memory_delete
+memory_restore
 memory_search
 ```
 

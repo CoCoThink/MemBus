@@ -21,6 +21,7 @@ _MEMORY_FIELDS = (
     "project",
     "repo",
     "branch",
+    "source",
 )
 
 
@@ -53,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     delete = sub.add_parser("delete", help="Delete a memory.")
     delete.add_argument("memory_id")
+    restore = sub.add_parser("restore", help="Restore a deleted memory.")
+    restore.add_argument("memory_id")
 
     alias = sub.add_parser("alias", help="Add or replace an alias.")
     alias.add_argument("alias")
@@ -63,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_context_fields(search)
     search.add_argument("--type", dest="types", action="append", default=[])
     search.add_argument("--limit", type=int, default=10)
+    search.add_argument("--strict", action="store_true")
 
     backup = sub.add_parser("backup", help="Create a SQLite backup.")
     backup.add_argument("destination")
@@ -100,6 +104,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json({"id": args.memory_id, "deleted": deleted})
         return 0 if deleted else 1
 
+    if args.command == "restore":
+        restored = bus.restore(args.memory_id)
+        _print_json({"id": args.memory_id, "restored": restored})
+        return 0 if restored else 1
+
     if args.command == "alias":
         bus.put_alias(args.alias, args.canonical)
         _print_json({"alias": args.alias, "canonical": args.canonical})
@@ -114,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             branch=args.branch,
             types=args.types,
             limit=args.limit,
+            strict=args.strict,
         )
         _print_json({"query": args.query, "results": [asdict(m) for m in results]})
         return 0
@@ -141,6 +151,7 @@ def _add_memory_fields(parser: argparse.ArgumentParser, *, require_core: bool) -
     parser.add_argument("--title")
     parser.add_argument("--content", required=require_core)
     parser.add_argument("--memory-type", required=require_core)
+    parser.add_argument("--source")
     _add_context_fields(parser)
 
 

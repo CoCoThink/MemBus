@@ -79,7 +79,7 @@ def _check_integrity(bus: MemBus) -> dict[str, Any]:
 
 def _check_fts_consistency(bus: MemBus) -> dict[str, Any]:
     with bus._connection() as conn:
-        memory_count = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+        memory_count = int(conn.execute("SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL").fetchone()[0])
         fts_count = int(conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0])
         missing = int(
             conn.execute(
@@ -87,7 +87,7 @@ def _check_fts_consistency(bus: MemBus) -> dict[str, Any]:
                 SELECT COUNT(*)
                 FROM memories AS m
                 LEFT JOIN memory_fts AS f ON f.memory_id = m.id
-                WHERE f.memory_id IS NULL
+                WHERE m.deleted_at IS NULL AND f.memory_id IS NULL
                 """
             ).fetchone()[0]
         )
@@ -97,7 +97,7 @@ def _check_fts_consistency(bus: MemBus) -> dict[str, Any]:
                 SELECT COUNT(*)
                 FROM memory_fts AS f
                 LEFT JOIN memories AS m ON m.id = f.memory_id
-                WHERE m.id IS NULL
+                WHERE m.id IS NULL OR m.deleted_at IS NOT NULL
                 """
             ).fetchone()[0]
         )

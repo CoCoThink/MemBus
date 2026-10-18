@@ -56,3 +56,15 @@ def test_cli_doctor_uses_exit_code_and_json(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert payload["ok"] is True
     assert payload["database"] == str(path)
+
+
+def test_doctor_counts_live_memories_only(tmp_path: Path) -> None:
+    bus = MemBus(tmp_path / "db.sqlite")
+    memory = bus.put(content="soft deleted", memory_type="note")
+    assert bus.delete(memory.id)
+    report = run_doctor(bus)
+    assert report["ok"] is True
+    consistency = next(x for x in report["checks"]
+                       if x["name"] == "fts_consistency")
+    assert consistency["data"]["memory_count"] == 0
+    assert consistency["data"]["fts_count"] == 0

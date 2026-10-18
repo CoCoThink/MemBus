@@ -13,19 +13,22 @@ Provide one user-owned local memory store shared by multiple AI clients.
 - Exact identifiers can be retrieved without embeddings.
 - FTS5/BM25 provides lexical retrieval.
 - Aliases provide deterministic query expansion.
-- Workspace/project/repo/branch context is a retrieval preference: matching context ranks first, conflicting context remains fallback, and missing query context broadens retrieval.
+- Workspace/project/repo/branch context supports broad preference (`strict=False`) and strict applicability filtering (`strict=True`); MCP defaults to strict, Python/CLI to broad.
 - The runtime requires no LLM, hosted service, or embedding model.
 - Writes remain safe under the tested multi-process SQLite workload.
 
 ## Canonical memory
 
-A memory contains only:
+A memory contains:
 
 - stable ID
 - title
 - content
 - memory type
 - optional workspace/project/repo/branch
+- optional unverified source label
+- UTC created_at and updated_at timestamps
+- nullable deleted_at for recoverable deletion
 
 A branch requires a repo.
 
@@ -36,10 +39,11 @@ put
 get
 update
 delete
+restore
 search
 ```
 
-Delete is physical.
+Delete is soft: normal reads/search exclude deleted rows; restore reinstates them and FTS entries.
 
 ## Retrieval
 
@@ -85,8 +89,7 @@ Repository tooling tracks:
 
 Not required now:
 
-- provenance/history metadata
-- soft delete/restore
+- authenticated provenance / revision history
 - schema migrations
 - runtime retrieval logs
 - batch/search-many retrieval

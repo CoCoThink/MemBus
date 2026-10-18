@@ -19,10 +19,12 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
         "--content", "BUG-9001 is caused by payment retry logic.",
         "--title", "BUG-9001",
         "--memory-type", "incident",
+        "--source", "cli-agent",
         "--project", "payment",
     ]) == 0
     created = _json_output(capsys)
     memory_id = created["id"]
+    assert created["source"] == "cli-agent"
 
     assert main([
         "--db", str(db),
@@ -45,3 +47,22 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
 
     assert main(["--db", str(db), "get", memory_id]) == 1
     assert _json_output(capsys)["error"] == "not_found"
+
+
+def test_cli_strict_and_restore(tmp_path: Path, capsys) -> None:
+    path = str(tmp_path / "memory.db")
+    assert main(["--db", path, "put", "--content", "cli-scope-marker",
+                 "--memory-type", "note", "--project", "analytics"]) == 0
+    memory_id = _json_output(capsys)["id"]
+    assert main(["--db", path, "search", "cli-scope-marker",
+                 "--project", "payment", "--strict"]) == 0
+    assert _json_output(capsys)["results"] == []
+    assert main(["--db", path, "search", "cli-scope-marker",
+                 "--project", "payment"]) == 0
+    assert _json_output(capsys)["results"][0]["id"] == memory_id
+    assert main(["--db", path, "delete", memory_id]) == 0
+    assert _json_output(capsys)["deleted"]
+    assert main(["--db", path, "restore", memory_id]) == 0
+    assert _json_output(capsys)["restored"]
+    assert main(["--db", path, "get", memory_id]) == 0
+    assert _json_output(capsys)["id"] == memory_id

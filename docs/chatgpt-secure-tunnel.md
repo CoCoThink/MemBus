@@ -25,13 +25,14 @@ Secure MCP Tunnel changes connectivity only. It does not create a second adapter
 
 ## Tool surface
 
-Both local and tunneled clients see the same five tools:
+Both local and tunneled clients see the same six tools:
 
 ```text
 memory_put
 memory_get
 memory_update
 memory_delete
+memory_restore
 memory_search
 ```
 

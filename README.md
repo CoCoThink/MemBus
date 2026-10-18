@@ -19,7 +19,7 @@ MCP / CLI
  └─ FTS5
 ```
 
-Canonical memory has eight fields:
+Canonical memory stores the following fields:
 
 ```text
 id
@@ -30,9 +30,13 @@ workspace
 project
 repo
 branch
+source
+created_at
+updated_at
+deleted_at
 ```
 
-There is no explicit scope field, lifecycle metadata, provenance metadata, synthetic relevance score, or soft-delete state.
+Timestamps use UTC ISO-8601. `source` is an optional user-supplied label, not a verified identity. Deletion is recoverable and excluded from normal reads/search, with no edit revision history.
 
 ## Retrieval
 
@@ -51,7 +55,7 @@ query
         Top-K
 ```
 
-Context is a retrieval preference, not an access boundary. Matching current context is ranked first; conflicting context remains available as fallback. Missing query context broadens retrieval instead of excluding more-specific memories.
+Python and CLI searches default to broad context preference (`strict=False`): conflicting memories can be fallback candidates. Set `strict=True` (or CLI `--strict`) to return only applicable memories, rejecting conflicts and more-specific memories where query context is missing. MCP search defaults to `strict=True` for agent safety; opt out with `strict=False` for exploration. Strict mode does not implement access control.
 
 ## MCP tools
 
@@ -60,10 +64,11 @@ memory_put
 memory_get
 memory_update
 memory_delete
+memory_restore
 memory_search
 ```
 
-Local agents and ChatGPT through Secure MCP Tunnel use the same five tools.
+Local agents and ChatGPT through Secure MCP Tunnel use the same six tools.
 
 ## Quick start
 
@@ -83,6 +88,8 @@ membus --db ./memory.db search "generated/client.ts" \
   --project payment \
   --repo payment-api
 
+# --strict filters conflicting or narrower context memories.
+# Delete is recoverable: membus --db ./memory.db restore MEM_ID
 membus --db ./memory.db backup ./backup.db
 ```
 
@@ -118,8 +125,8 @@ python tools/evaluate.py evals/golden_v1.json \
 
 Deliberately absent until real failures justify them:
 
-- schema compatibility migrations
-- history/soft delete
+- schema compatibility migrations (pre-deployment databases should be recreated)
+- edit revision history
 - runtime retrieval logging
 - batch/search-many API
 - embeddings/vector DB

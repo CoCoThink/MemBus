@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +27,9 @@ _MEMORY_TYPES = frozenset({
 })
 _TOKEN_RE = re.compile(r"[^\W_]+(?:[_-][^\W_]+)*", re.UNICODE)
 _CONTEXT_FIELDS = ("workspace", "project", "repo", "branch")
-_MEMORY_COLUMNS = ("id", "title", "content", "memory_type", *_CONTEXT_FIELDS)
-_MUTABLE_FIELDS = set(_MEMORY_COLUMNS) - {"id"}
+_USER_FIELDS = ("title", "content", "memory_type", *_CONTEXT_FIELDS, "source")
+_MEMORY_COLUMNS = ("id", *_USER_FIELDS, "created_at", "updated_at", "deleted_at")
+_MUTABLE_FIELDS = set(_USER_FIELDS)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -35,37 +37,29 @@ CREATE TABLE IF NOT EXISTS memories (
     title TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
     memory_type TEXT NOT NULL,
-    workspace TEXT,
-    project TEXT,
-    repo TEXT,
-    branch TEXT
+    workspace TEXT, project TEXT, repo TEXT, branch TEXT,
+    source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    deleted_at TEXT
 );
-
 CREATE TABLE IF NOT EXISTS aliases (
     alias TEXT PRIMARY KEY,
     canonical TEXT NOT NULL
 );
-
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    memory_id UNINDEXED,
-    title,
-    content,
+    memory_id UNINDEXED, title, content,
     tokenize = 'unicode61 remove_diacritics 2'
 );
-
 CREATE TRIGGER IF NOT EXISTS memories_ai
-AFTER INSERT ON memories BEGIN
+AFTER INSERT ON memories WHEN new.deleted_at IS NULL BEGIN
     INSERT INTO memory_fts(memory_id, title, content)
     VALUES (new.id, new.title, new.content);
 END;
-
 CREATE TRIGGER IF NOT EXISTS memories_au
-AFTER UPDATE OF title, content ON memories BEGIN
+AFTER UPDATE OF title, content, deleted_at ON memories BEGIN
     DELETE FROM memory_fts WHERE memory_id = old.id;
     INSERT INTO memory_fts(memory_id, title, content)
-    VALUES (new.id, new.title, new.content);
+    SELECT new.id, new.title, new.content WHERE new.deleted_at IS NULL;
 END;
-
 CREATE TRIGGER IF NOT EXISTS memories_ad
 AFTER DELETE ON memories BEGIN
     DELETE FROM memory_fts WHERE memory_id = old.id;
@@ -83,6 +77,10 @@ class Memory:
     project: str | None
     repo: str | None
     branch: str | None
+    source: str | None
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
 
 
 class MemBus:
@@ -102,27 +100,27 @@ class MemBus:
         project: str | None = None,
         repo: str | None = None,
         branch: str | None = None,
+        source: str | None = None,
     ) -> Memory:
         values = _normalize_memory_values(
-            title=title,
-            content=content,
-            memory_type=memory_type,
-            workspace=workspace,
-            project=project,
-            repo=repo,
-            branch=branch,
+            title=title, content=content, memory_type=memory_type,
+            workspace=workspace, project=project, repo=repo, branch=branch,
+            source=source,
         )
-        memory = Memory(id=f"mem_{uuid.uuid4().hex}", **values)
-
+        now = _utc_now()
+        memory = Memory(
+            id=f"mem_{uuid.uuid4().hex}", **values,
+            created_at=now, updated_at=now, deleted_at=None,
+        )
         with self._transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO memories (
-                    id, title, content, memory_type,
-                    workspace, project, repo, branch
+                    id, title, content, memory_type, workspace, project,
+                    repo, branch, source, created_at, updated_at, deleted_at
                 ) VALUES (
-                    :id, :title, :content, :memory_type,
-                    :workspace, :project, :repo, :branch
+                    :id, :title, :content, :memory_type, :workspace, :project,
+                    :repo, :branch, :source, :created_at, :updated_at, :deleted_at
                 )
                 """,
                 _memory_params(memory),
@@ -132,7 +130,7 @@ class MemBus:
     def get(self, memory_id: str) -> Memory | None:
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM memories WHERE id = ?",
+                "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL",
                 (memory_id,),
             ).fetchone()
         return _memory_from_row(row) if row is not None else None
@@ -142,46 +140,43 @@ class MemBus:
         if unknown:
             raise ValueError(f"Unsupported mutable fields: {sorted(unknown)}")
 
-        # Lock before reading: concurrent updates and deletes must not act on
-        # a stale snapshot or silently overwrite another writer's changes.
+        # Keep the read and write under the same BEGIN IMMEDIATE lock.
         with self._transaction() as conn:
             row = conn.execute(
-                "SELECT * FROM memories WHERE id = ?",
+                "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL",
                 (memory_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(memory_id)
-
             current = _memory_from_row(row)
             if not changes:
                 return current
 
             proposed = replace(current, **changes)
-            memory = Memory(
-                id=current.id,
-                **_normalize_memory_values(
-                    title=proposed.title,
-                    content=proposed.content,
-                    memory_type=proposed.memory_type,
-                    workspace=proposed.workspace,
-                    project=proposed.project,
-                    repo=proposed.repo,
-                    branch=proposed.branch,
-                ),
+            normalized = _normalize_memory_values(
+                title=proposed.title,
+                content=proposed.content,
+                memory_type=proposed.memory_type,
+                workspace=proposed.workspace,
+                project=proposed.project,
+                repo=proposed.repo,
+                branch=proposed.branch,
+                source=proposed.source,
             )
-
+            memory = Memory(
+                id=current.id, **normalized,
+                created_at=current.created_at,
+                updated_at=_utc_now(),
+                deleted_at=None,
+            )
             cursor = conn.execute(
                 """
-                UPDATE memories
-                SET
-                    title = :title,
-                    content = :content,
-                    memory_type = :memory_type,
-                    workspace = :workspace,
-                    project = :project,
-                    repo = :repo,
-                    branch = :branch
-                WHERE id = :id
+                UPDATE memories SET
+                    title = :title, content = :content,
+                    memory_type = :memory_type, workspace = :workspace,
+                    project = :project, repo = :repo, branch = :branch,
+                    source = :source, updated_at = :updated_at
+                WHERE id = :id AND deleted_at IS NULL
                 """,
                 _memory_params(memory),
             )
@@ -190,10 +185,22 @@ class MemBus:
         return memory
 
     def delete(self, memory_id: str) -> bool:
+        """Soft-delete a memory; repeated deletion returns False."""
+        now = _utc_now()
         with self._transaction() as conn:
             return conn.execute(
-                "DELETE FROM memories WHERE id = ?",
-                (memory_id,),
+                """UPDATE memories SET deleted_at = ?, updated_at = ?
+                   WHERE id = ? AND deleted_at IS NULL""",
+                (now, now, memory_id),
+            ).rowcount > 0
+
+    def restore(self, memory_id: str) -> bool:
+        """Restore a soft-deleted memory; active/missing IDs return False."""
+        with self._transaction() as conn:
+            return conn.execute(
+                """UPDATE memories SET deleted_at = NULL, updated_at = ?
+                   WHERE id = ? AND deleted_at IS NOT NULL""",
+                (_utc_now(), memory_id),
             ).rowcount > 0
 
     def put_alias(self, alias: str, canonical: str) -> None:
@@ -222,6 +229,7 @@ class MemBus:
         branch: str | None = None,
         types: Iterable[str] = (),
         limit: int = 10,
+        strict: bool = False,
     ) -> list[Memory]:
         query = _normalize_text(query)
         if not query:
@@ -243,6 +251,7 @@ class MemBus:
             context=context,
             types=normalized_types,
             limit=limit,
+            strict=strict,
         )
 
         tokens = _extract_tokens(query)
@@ -255,6 +264,7 @@ class MemBus:
                 context=context,
                 types=normalized_types,
                 limit=limit + len(exact),
+                strict=strict,
             )
             if fts_query is not None
             else []
@@ -343,8 +353,9 @@ class MemBus:
         context: dict[str, str | None],
         types: tuple[str, ...],
         limit: int,
+        strict: bool,
     ) -> list[Memory]:
-        where = [
+        where = ["m.deleted_at IS NULL",
             """
             (
                 instr(lower(m.title), lower(?)) > 0
@@ -354,6 +365,8 @@ class MemBus:
         ]
         params: list[Any] = [query, query]
         _append_type_filter(where, params, types)
+        if strict:
+            _append_strict_context(where, params, context)
         context_order, context_params = _context_order(context)
 
         with self._connection() as conn:
@@ -376,10 +389,13 @@ class MemBus:
         context: dict[str, str | None],
         types: tuple[str, ...],
         limit: int,
+        strict: bool,
     ) -> list[Memory]:
-        where = ["memory_fts MATCH ?"]
+        where = ["memory_fts MATCH ?", "m.deleted_at IS NULL"]
         params: list[Any] = [match_query]
         _append_type_filter(where, params, types)
+        if strict:
+            _append_strict_context(where, params, context)
         context_order, context_params = _context_order(context)
 
         with self._connection() as conn:
@@ -443,6 +459,10 @@ class MemBus:
         raise last_error
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def _normalize_memory_values(
     *,
     title: str,
@@ -452,6 +472,7 @@ def _normalize_memory_values(
     project: str | None,
     repo: str | None,
     branch: str | None,
+    source: str | None,
 ) -> dict[str, Any]:
     content = content.strip()
     if not content:
@@ -465,6 +486,7 @@ def _normalize_memory_values(
         "project": _clean_optional(project),
         "repo": _clean_optional(repo),
         "branch": _clean_optional(branch),
+        "source": _clean_optional(source),
     }
     _validate_context(values)
     return values
@@ -491,6 +513,21 @@ def _append_type_filter(
         placeholders = ",".join("?" for _ in types)
         where.append(f"m.memory_type IN ({placeholders})")
         params.extend(types)
+
+
+def _append_strict_context(
+    where: list[str],
+    params: list[Any],
+    context: dict[str, str | None],
+) -> None:
+    # An omitted context dimension must not admit narrower-scope memories.
+    for column in _CONTEXT_FIELDS:
+        value = context[column]
+        if value is None:
+            where.append(f"m.{column} IS NULL")
+        else:
+            where.append(f"(m.{column} IS NULL OR m.{column} = ?)")
+            params.append(value)
 
 
 def _context_order(

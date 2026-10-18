@@ -36,6 +36,7 @@ def build_server(db_path: str | Path | None = None):
         project: str | None = None,
         repo: str | None = None,
         branch: str | None = None,
+        source: str | None = None,
     ) -> dict[str, Any]:
         """Store a durable memory."""
 
@@ -48,6 +49,7 @@ def build_server(db_path: str | Path | None = None):
                 project=project,
                 repo=repo,
                 branch=branch,
+                source=source,
             )
         )
 
@@ -69,12 +71,17 @@ def build_server(db_path: str | Path | None = None):
 
     @mcp.tool()
     def memory_delete(memory_id: str) -> dict[str, Any]:
-        """Delete one memory."""
+        """Soft-delete one memory, recoverable via memory_restore."""
 
         return {
             "memory_id": memory_id,
             "deleted": bus.delete(memory_id),
         }
+
+    @mcp.tool()
+    def memory_restore(memory_id: str) -> dict[str, Any]:
+        """Restore a soft-deleted memory."""
+        return {"memory_id": memory_id, "restored": bus.restore(memory_id)}
 
     @mcp.tool()
     def memory_search(
@@ -85,6 +92,7 @@ def build_server(db_path: str | Path | None = None):
         branch: str | None = None,
         types: list[str] | None = None,
         limit: int = 10,
+        strict: bool = True,
     ) -> dict[str, Any]:
         """Search memories with exact matching, aliases, FTS5, and context isolation."""
 
@@ -96,6 +104,7 @@ def build_server(db_path: str | Path | None = None):
             branch=branch,
             types=types or (),
             limit=limit,
+            strict=strict,
         )
         return {
             "query": query,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import Barrier, Event
@@ -169,6 +170,7 @@ def test_delete_removes_fts_row(bus: MemBus) -> None:
     memory = bus.put(content="temporary-marker", memory_type="note")
     assert bus.delete(memory.id) is True
     assert bus.search("temporary-marker") == []
+    assert bus.get(memory.id) is None
 
     with bus._connection() as conn:
         assert conn.execute(
@@ -293,3 +295,73 @@ def test_delete_between_old_read_and_write_cannot_report_ghost_update(
             future.result(timeout=15)
 
     assert deleter.get(memory.id) is None
+
+
+def test_strict_context_filters_before_limit(bus: MemBus) -> None:
+    for n in range(12):
+        bus.put(content=f"exact-marker unrelated-{n}", memory_type="fact",
+                project="analytics")
+    global_note = bus.put(content="exact-marker global", memory_type="fact")
+    project_note = bus.put(content="exact-marker project", memory_type="fact",
+                           project="payment")
+    branch_note = bus.put(content="exact-marker branch", memory_type="fact",
+                          project="payment", repo="api", branch="dev")
+    result = bus.search("exact-marker", project="payment", strict=True, limit=2)
+    assert {m.id for m in result} == {global_note.id, project_note.id}
+    assert len(bus.search("exact-marker", project="payment", limit=100)) == 15
+    assert [m.id for m in bus.search("exact-marker", strict=True)] == [
+        global_note.id
+    ]
+    assert branch_note.id not in {m.id for m in result}
+
+
+def test_strict_fts_context_does_not_return_conflicting_hits(
+    bus: MemBus,
+) -> None:
+    payment = bus.put(
+        content="Payment production deployment smoke checklist",
+        memory_type="procedure", project="payment"
+    )
+    bus.put(
+        content="Analytics production deployment smoke checklist",
+        memory_type="procedure", project="analytics"
+    )
+    assert [m.id for m in bus.search(
+        "smoke deployment", strict=True, project="payment"
+    )] == [payment.id]
+
+
+def test_metadata_soft_delete_restore_and_fts(bus: MemBus) -> None:
+    from membus.doctor import run_doctor
+    memory = bus.put(content="restore-test-marker", memory_type="note",
+                     source="claude-code")
+    assert memory.created_at == memory.updated_at
+    assert memory.deleted_at is None
+    assert datetime.fromisoformat(memory.created_at.replace("Z", "+00:00"))
+    updated = bus.update(memory.id, source="codex", title="updated")
+    assert updated.created_at == memory.created_at
+    assert updated.updated_at >= memory.updated_at
+    assert updated.source == "codex"
+    for field in ("id", "created_at", "updated_at", "deleted_at"):
+        with pytest.raises(ValueError, match="Unsupported mutable"):
+            bus.update(memory.id, **{field: "tamper"})
+    assert bus.delete(memory.id)
+    assert not bus.delete(memory.id)
+    assert bus.get(memory.id) is None
+    assert bus.search("restore-test-marker") == []
+    with pytest.raises(KeyError):
+        bus.update(memory.id, content="deleted")
+    with bus._connection() as conn:
+        assert conn.execute("SELECT deleted_at FROM memories WHERE id = ?",
+                            (memory.id,)).fetchone()[0] is not None
+        assert conn.execute("SELECT COUNT(*) FROM memory_fts WHERE memory_id = ?",
+                            (memory.id,)).fetchone()[0] == 0
+    assert run_doctor(bus)["ok"]
+    assert bus.restore(memory.id)
+    assert not bus.restore(memory.id)
+    revived = bus.get(memory.id)
+    assert revived is not None
+    assert revived.created_at == memory.created_at
+    assert revived.deleted_at is None
+    assert bus.search("restore-test-marker")[0].id == memory.id
+    assert run_doctor(bus)["ok"]
