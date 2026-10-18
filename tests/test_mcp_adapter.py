@@ -65,7 +65,14 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
              "memory_type": "note", "project": "analytics"},
         )
         foreign_id = foreign.structured_content["id"]
-        assert foreign_id not in {m["id"] for m in payload["results"]}
+        strict_results = await client.call_tool(
+            "memory_search",
+            {"query": "generated/client.ts", "project": "payment",
+             "repo": "payment-api"},
+        )
+        assert foreign_id not in {
+            m["id"] for m in strict_results.structured_content["results"]
+        }
         broad = await client.call_tool(
             "memory_search",
             {"query": "generated/client.ts", "project": "payment",
@@ -76,5 +83,11 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
         assert deleted.structured_content["deleted"]
         restored = await client.call_tool("memory_restore", {"memory_id": memory_id})
         assert restored.structured_content["restored"]
-        recovered = await client.call_tool("memory_get", {"memory_id": memory_id})
-        assert recovered.structured_content["id"] == memory_id
+        recovered = await client.call_tool(
+            "memory_search",
+            {"query": "generated/client.ts", "project": "payment",
+             "repo": "payment-api"},
+        )
+        assert memory_id in {
+            m["id"] for m in recovered.structured_content["results"]
+        }
