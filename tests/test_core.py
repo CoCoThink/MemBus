@@ -365,3 +365,51 @@ def test_metadata_soft_delete_restore_and_fts(bus: MemBus) -> None:
     assert revived.deleted_at is None
     assert bus.search("restore-test-marker")[0].id == memory.id
     assert run_doctor(bus)["ok"]
+
+
+def test_chinese_reordered_query_uses_ngram_fallback(bus: MemBus) -> None:
+    relevant = bus.put(
+        content="生成的客户端代码需要通过 OpenAPI 更新。",
+        memory_type="procedure", project="payment",
+    )
+    assert bus.search("如何更新客户端", project="payment", strict=True)[0].id == relevant.id
+    assert bus.search("客户端", project="payment", strict=True)[0].id == relevant.id
+
+
+def test_chinese_separated_two_character_terms_are_retrievable(
+    bus: MemBus,
+) -> None:
+    relevant = bus.put(
+        content="支付服务需要完成检查之后才能进行部署。",
+        memory_type="procedure", project="payment",
+    )
+    assert bus.search("支付部署", project="payment", strict=True)[0].id == relevant.id
+
+
+def test_chinese_fallback_weak_matches_scope_and_soft_delete(
+    bus: MemBus,
+) -> None:
+    relevant = bus.put(
+        content="生成的客户端代码需要通过 OpenAPI 更新。",
+        memory_type="procedure", project="payment",
+    )
+    bus.put(
+        content="如何检查日志收集系统。",
+        memory_type="note", project="payment",
+    )
+    foreign = bus.put(
+        content="客户端更新规则仅适用于内部分析平台。",
+        memory_type="note", project="analytics",
+    )
+    assert [m.id for m in bus.search(
+        "如何更新客户端", project="payment", strict=True
+    )] == [relevant.id]
+    assert foreign.id in {m.id for m in bus.search(
+        "如何更新客户端", project="payment", strict=False
+    )}
+    assert bus.delete(relevant.id)
+    assert bus.search("如何更新客户端", project="payment", strict=True) == []
+    assert bus.restore(relevant.id)
+    assert bus.search(
+        "如何更新客户端", project="payment", strict=True
+    )[0].id == relevant.id

@@ -187,6 +187,24 @@
         "project": "payment",
         "repo": "payment-api"
       }
+    },
+    {
+      "key": "zh_client_generation",
+      "memory": {
+        "title": "生成的客户端",
+        "content": "生成的客户端代码需要通过 OpenAPI 更新。",
+        "memory_type": "procedure",
+        "project": "chinese-demo"
+      }
+    },
+    {
+      "key": "zh_payment_deployment",
+      "memory": {
+        "title": "支付服务规则",
+        "content": "支付服务需要完成检查之后才能进行部署。",
+        "memory_type": "procedure",
+        "project": "chinese-demo"
+      }
     }
   ],
   "queries": [
@@ -455,6 +473,36 @@
       "expected": [
         "payment_pg17",
         "analytics_pg15"
+      ]
+    },
+    {
+      "name": "Chinese full substring",
+      "query": "客户端",
+      "context": {
+        "project": "chinese-demo"
+      },
+      "expected": [
+        "zh_client_generation"
+      ]
+    },
+    {
+      "name": "Chinese reordered question",
+      "query": "如何更新客户端",
+      "context": {
+        "project": "chinese-demo"
+      },
+      "expected": [
+        "zh_client_generation"
+      ]
+    },
+    {
+      "name": "Chinese separated two-character words",
+      "query": "支付部署",
+      "context": {
+        "project": "chinese-demo"
+      },
+      "expected": [
+        "zh_payment_deployment"
       ]
     }
   ]

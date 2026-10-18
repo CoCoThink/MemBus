@@ -43,7 +43,8 @@ Timestamps use UTC ISO-8601. `source` is an optional user-supplied label, not a 
 ```text
 query
   ├─ exact full-query substring
-  └─ tokens -> aliases -> FTS5/BM25
+  ├─ tokens -> aliases -> FTS5/BM25
+  └─ Chinese 2/3-gram fallback
           │
           ▼
       context filter
@@ -56,6 +57,8 @@ query
 ```
 
 Python, CLI, and MCP searches all default to broad context preference (`strict=False`): matching context ranks first, and conflicting memories may be returned as fallback. Set `strict=True` (or CLI `--strict`) to return only compatible memories, rejecting conflicts and more-specific memories where query context is missing. Broad results are not automatically applicable to the current task; check their context before acting. Neither mode implements access control.
+
+Chinese text uses bounded, parameterized 2/3-character substring matching as a low-priority recall fallback when full-query substring and unicode61 FTS miss rearranged Chinese phrases. This scans the local SQLite memory table; no new index or dependency is required. It is lexical matching, not semantic understanding.
 
 ## MCP tools
 

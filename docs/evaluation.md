@@ -20,6 +20,7 @@ It covers:
 - workspace/project/repo isolation
 - type filtering
 - incidents/procedures
+- Chinese full substring and reordered/separated Chinese term queries
 
 It should grow from real retrieval failures.
 

@@ -26,6 +26,7 @@ _MEMORY_TYPES = frozenset({
     "note",
 })
 _TOKEN_RE = re.compile(r"[^\W_]+(?:[_-][^\W_]+)*", re.UNICODE)
+_HAN_RUN_RE = re.compile(r"[\u3400-\u9fff]+")
 _CONTEXT_FIELDS = ("workspace", "project", "repo", "branch")
 _USER_FIELDS = ("title", "content", "memory_type", *_CONTEXT_FIELDS, "source")
 _MEMORY_COLUMNS = ("id", *_USER_FIELDS, "created_at", "updated_at", "deleted_at")
@@ -270,16 +271,25 @@ class MemBus:
             else []
         )
 
+        # Bounded Chinese n-gram substring fallback for reordered queries.
+        # Retains the existing FTS index and needs no extra dependency.
+        cjk = self._cjk_candidates(
+            query, context=context, types=normalized_types,
+            limit=limit + len(exact) + len(fts), strict=strict,
+        )
         exact_preferred, exact_fallback = _partition_context(exact, context)
         fts_preferred, fts_fallback = _partition_context(fts, context)
+        cjk_preferred, cjk_fallback = _partition_context(cjk, context)
 
         results: list[Memory] = []
         seen: set[str] = set()
         for group in (
             exact_preferred,
             fts_preferred,
+            cjk_preferred,
             exact_fallback,
             fts_fallback,
+            cjk_fallback,
         ):
             for memory in group:
                 if memory.id in seen:
@@ -411,6 +421,55 @@ class MemBus:
                 [*params, *context_params, limit],
             ).fetchall()
         return [_memory_from_row(row) for row in rows]
+
+    def _cjk_candidates(
+        self,
+        query: str,
+        *,
+        context: dict[str, str | None],
+        types: tuple[str, ...],
+        limit: int,
+        strict: bool,
+    ) -> list[Memory]:
+        # One 3-gram retrieves words inside reordered Chinese sentences;
+        # two 2-grams retrieve separated short words, e.g. "支付部署".
+        trigrams = _cjk_ngrams(query, 3)[:12]
+        bigrams = _cjk_ngrams(query, 2)[:12]
+        if not trigrams and len(bigrams) < 2:
+            return []
+
+        score_terms: list[str] = []
+        score_params: list[str] = []
+        for weight, grams in ((4, trigrams), (1, bigrams)):
+            for gram in grams:
+                score_terms.append(
+                    "(CASE WHEN instr(m.title, ?) > 0 "
+                    f"OR instr(m.content, ?) > 0 THEN {weight} ELSE 0 END)"
+                )
+                score_params.extend((gram, gram))
+        score_sql = " + ".join(score_terms)
+        where = ["m.deleted_at IS NULL"]
+        params: list[Any] = []
+        _append_type_filter(where, params, types)
+        if strict:
+            _append_strict_context(where, params, context)
+        context_order, context_params = _context_order(context)
+
+        # Bounded to 24 query grams and parameterized throughout.
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.*, ({score_sql}) AS cjk_score
+                FROM memories AS m
+                WHERE {' AND '.join(where)}
+                ORDER BY cjk_score DESC, {context_order}, m.id ASC
+                LIMIT ?
+                """,
+                [*score_params, *params, *context_params, limit],
+            ).fetchall()
+        return [
+            _memory_from_row(row) for row in rows if row["cjk_score"] >= 2
+        ]
 
     def _alias_map(self, tokens: Iterable[str]) -> dict[str, str]:
         normalized = tuple(dict.fromkeys(token.casefold() for token in tokens if token))
@@ -606,6 +665,15 @@ def _normalize_text(value: str) -> str:
 
 def _extract_tokens(query: str) -> list[str]:
     return list(dict.fromkeys(match.group(0) for match in _TOKEN_RE.finditer(query)))
+
+
+def _cjk_ngrams(query: str, size: int) -> list[str]:
+    return list(dict.fromkeys(
+        run[i:i + size]
+        for match in _HAN_RUN_RE.finditer(query)
+        for run in (match.group(0),)
+        for i in range(len(run) - size + 1)
+    ))
 
 
 def _expand_tokens(tokens: Iterable[str], aliases: dict[str, str]) -> list[str]:
