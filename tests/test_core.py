@@ -34,64 +34,67 @@ def test_crud(bus: MemBus) -> None:
     assert bus.delete(memory.id) is False
 
 
-def test_context_mismatch_is_excluded(bus: MemBus) -> None:
-    wrong = bus.put(
+def test_matching_context_is_preferred_but_conflict_remains_retrievable(
+    bus: MemBus,
+) -> None:
+    other = bus.put(
         content="PostgreSQL version for analytics is 15.",
         memory_type="fact",
         workspace="work",
         project="analytics",
     )
-    right = bus.put(
+    current = bus.put(
         content="PostgreSQL version for payment is 17.",
         memory_type="fact",
         workspace="work",
         project="payment",
     )
 
-    ids = [
-        memory.id
-        for memory in bus.search(
-            "PostgreSQL version",
-            workspace="work",
-            project="payment",
-        )
-    ]
+    results = bus.search(
+        "PostgreSQL version",
+        workspace="work",
+        project="payment",
+    )
+    ids = [memory.id for memory in results]
 
-    assert right.id in ids
-    assert wrong.id not in ids
+    assert ids[0] == current.id
+    assert other.id in ids
 
 
 
 
-def test_missing_workspace_does_not_match_workspace_specific_memory(bus: MemBus) -> None:
-    global_memory = bus.put(
+def test_missing_workspace_broadens_search(bus: MemBus) -> None:
+    project_memory = bus.put(
         content="context-containment-marker general payment guidance.",
         memory_type="note",
         project="payment",
     )
-    bus.put(
+    workspace_memory = bus.put(
         content="context-containment-marker personal payment guidance.",
         memory_type="note",
         workspace="personal",
         project="payment",
     )
 
-    results = bus.search(
-        "context-containment-marker",
-        project="payment",
-    )
+    ids = {
+        memory.id
+        for memory in bus.search(
+            "context-containment-marker",
+            project="payment",
+        )
+    }
 
-    assert [memory.id for memory in results] == [global_memory.id]
+    assert ids == {project_memory.id, workspace_memory.id}
 
 
-def test_missing_repo_does_not_match_repo_specific_memory(bus: MemBus) -> None:
+def test_missing_repo_broadens_search(bus: MemBus) -> None:
     project_memory = bus.put(
         content="repo-containment-marker project deployment guidance.",
         memory_type="procedure",
         workspace="work",
         project="payment",
     )
-    bus.put(
+    repo_memory = bus.put(
         content="repo-containment-marker payment-api deployment guidance.",
         memory_type="procedure",
         workspace="work",
@@ -99,13 +102,42 @@ def test_missing_repo_does_not_match_repo_specific_memory(bus: MemBus) -> None:
         repo="payment-api",
     )
 
-    results = bus.search(
-        "repo-containment-marker",
+    ids = {
+        memory.id
+        for memory in bus.search(
+            "repo-containment-marker",
+            workspace="work",
+            project="payment",
+        )
+    }
+
+    assert ids == {project_memory.id, repo_memory.id}
+
+
+def test_more_specific_matching_context_is_preferred(bus: MemBus) -> None:
+    project_memory = bus.put(
+        content="specificity-marker project deployment guidance.",
+        memory_type="procedure",
         workspace="work",
         project="payment",
     )
+    repo_memory = bus.put(
+        content="specificity-marker payment-api deployment guidance.",
+        memory_type="procedure",
+        workspace="work",
+        project="payment",
+        repo="payment-api",
+    )
 
-    assert [memory.id for memory in results] == [project_memory.id]
+    results = bus.search(
+        "specificity-marker",
+        workspace="work",
+        project="payment",
+        repo="payment-api",
+    )
+
+    assert results[0].id == repo_memory.id
+    assert project_memory.id in {memory.id for memory in results}
 
 
 def test_exact_identifier_is_retrievable(bus: MemBus) -> None:
