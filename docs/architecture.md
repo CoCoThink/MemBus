@@ -53,19 +53,23 @@ query
   └─ tokenize -> aliases -> FTS5
           │
           ▼
-context mismatch exclusion
+context preference tiers
           │
           ▼
-exact matches first
-then FTS BM25 order
+matching/global context first
+conflicting context as fallback
+          │
+          ▼
+exact first within tier
+then FTS BM25
           │
           ▼
 Top-K
 ```
 
-A row is eligible only when every non-empty context value stored on the memory is present and equal in the query. Equivalently, `memory_context ⊆ query_context`.
+Context is soft retrieval metadata. Query-provided context prefers memories that match those dimensions, while conflicting memories remain fallback candidates. A missing query context dimension does not filter anything.
 
-There is no ranking layer, numeric score, scope bonus, recency signal, title boost, explain mode, or multi-query fusion.
+There is no numeric scoring layer, recency signal, title boost, explain mode, or multi-query fusion. Context uses discrete preference tiers only.
 
 ## Writes
 
