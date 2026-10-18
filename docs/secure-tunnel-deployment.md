@@ -4,6 +4,10 @@ Status: personal single-user deployment
 
 MemBus uses the same `membus-mcp` stdio server for local agents and ChatGPT Web. Secure MCP Tunnel only changes connectivity.
 
+This runbook covers the stdio deployment. To share a running HTTP service with
+local or WSL clients, see [MCP HTTP deployment](mcp-http.md) and configure the
+tunnel's MCP server URL to that service's `/mcp` endpoint.
+
 ## 1. Install MemBus
 
 Use a dedicated virtual environment so the tunnel profile can reference a stable absolute executable path.

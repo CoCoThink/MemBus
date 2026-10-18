@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_MS = 5_000
 _BEGIN_RETRY_ATTEMPTS = 5
 _MAX_TITLE = 200
@@ -46,13 +46,21 @@ _CONTEXT_FIELDS = ("workspace", "project", "repo", "branch")
 _USER_FIELDS = ("title", "content", "memory_type", *_CONTEXT_FIELDS, "source")
 _MEMORY_COLUMNS = (
     "id", *_USER_FIELDS,
-    "version", "created_at", "updated_at", "deleted_at", "superseded_by",
+    "revision", "created_at", "updated_at", "deleted_at", "superseded_by",
 )
 _ACTIVE = "m.deleted_at IS NULL AND m.superseded_by IS NULL"
 
 # One statement per entry so initialization can run inside a single
 # BEGIN IMMEDIATE transaction (trigger bodies contain semicolons).
 _SCHEMA = (
+    """
+    CREATE TABLE metadata (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        revision INTEGER NOT NULL CHECK (revision >= 0),
+        generation TEXT NOT NULL
+    )
+    """,
+    "INSERT INTO metadata VALUES (1, 0, lower(hex(randomblob(16))))",
     """
     CREATE TABLE IF NOT EXISTS memories (
         rid INTEGER PRIMARY KEY,
@@ -63,7 +71,7 @@ _SCHEMA = (
         workspace TEXT, project TEXT, repo TEXT, branch TEXT,
         source TEXT,
         content_hash TEXT NOT NULL,
-        version INTEGER NOT NULL DEFAULT 1,
+        revision INTEGER NOT NULL UNIQUE CHECK (revision > 0),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT,
@@ -75,15 +83,13 @@ _SCHEMA = (
     ON memories(content_hash)
     WHERE deleted_at IS NULL AND superseded_by IS NULL
     """,
-    "CREATE INDEX IF NOT EXISTS memories_updated ON memories(updated_at, id)",
+    "CREATE INDEX IF NOT EXISTS memories_updated ON memories(updated_at)",
     # Covering index: `contexts` is a pure index scan.
     """
     CREATE INDEX IF NOT EXISTS memories_context
     ON memories(workspace, project, repo)
     WHERE deleted_at IS NULL AND superseded_by IS NULL
     """,
-    "CREATE INDEX IF NOT EXISTS memories_successor ON memories(superseded_by)"
-    " WHERE superseded_by IS NOT NULL",
     """
     CREATE TABLE IF NOT EXISTS aliases (
         alias TEXT PRIMARY KEY,
@@ -147,21 +153,29 @@ UNSET: Any = _Unset()
 
 
 class NotFound(KeyError):
-    """No memory with this ID, or not in the state the operation requires."""
+    """No memory with this ID."""
 
     def __init__(self, memory_id: str) -> None:
         super().__init__(memory_id)
         self.memory_id = memory_id
 
 
-class VersionConflict(Exception):
-    """update() was given a stale ``expected_version``."""
+class RevisionConflict(Exception):
+    """A memory changed revision or no longer permits the requested mutation."""
 
     def __init__(self, current: Memory) -> None:
         super().__init__(
-            f"{current.id} is at version {current.version}"
+            f"{current.id} is {current.state} at revision {current.revision}"
         )
         self.current = current
+
+
+class SyncResetRequired(Exception):
+    """The client must discard its cache and sync from revision zero."""
+
+    def __init__(self, generation: str) -> None:
+        super().__init__("discard the local cache and sync from revision zero")
+        self.generation = generation
 
 
 class DuplicateMemory(Exception):
@@ -183,7 +197,7 @@ class Memory:
     repo: str | None
     branch: str | None
     source: str | None
-    version: int
+    revision: int
     created_at: str
     updated_at: str
     deleted_at: str | None
@@ -216,6 +230,28 @@ class PutResult:
             "created": self.created,
             "superseded": list(self.superseded),
             "similar": [memory.to_dict() for memory in self.similar],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRef:
+    id: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class SyncPage:
+    memories: list[Memory]
+    next_revision: int
+    generation: str
+    has_more: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "memories": [memory.to_dict() for memory in self.memories],
+            "next_revision": self.next_revision,
+            "generation": self.generation,
+            "has_more": self.has_more,
         }
 
 
@@ -261,18 +297,25 @@ class MemBus:
         repo: str | None = None,
         branch: str | None = None,
         source: str | None = None,
-        supersedes: Iterable[str] = (),
+        supersedes: Iterable[MemoryRef] = (),
     ) -> PutResult:
         values = _normalize_memory_values(
             title=title, content=content, memory_type=memory_type,
             workspace=workspace, project=project, repo=repo, branch=branch,
             source=source,
         )
-        supersede_ids = tuple(dict.fromkeys(supersedes))
+        targets: dict[str, int] = {}
+        for target in supersedes:
+            if not isinstance(target, MemoryRef) or not isinstance(target.id, str) or not target.id:
+                raise ValueError("supersedes requires MemoryRef(id, expected_revision)")
+            _validate_revision(target.expected_revision)
+            if target.id in targets and targets[target.id] != target.expected_revision:
+                raise ValueError("conflicting revisions for the same supersedes ID")
+            targets[target.id] = target.expected_revision
         digest = _content_hash(values)
-        now = _utc_now()
 
         with self._transaction() as conn:
+            now = _utc_now()
             existing = conn.execute(
                 f"SELECT m.* FROM memories AS m "
                 f"WHERE m.content_hash = ? AND {_ACTIVE}",
@@ -282,7 +325,8 @@ class MemBus:
                 memory, created = _memory_from_row(existing), False
             else:
                 memory = Memory(
-                    id=f"mem_{uuid.uuid4().hex}", **values, version=1,
+                    id=f"mem_{uuid.uuid4().hex}", **values,
+                    revision=_next_revision(conn),
                     created_at=now, updated_at=now,
                     deleted_at=None, superseded_by=None,
                 )
@@ -290,12 +334,12 @@ class MemBus:
                     """
                     INSERT INTO memories (
                         id, title, content, memory_type, workspace, project,
-                        repo, branch, source, content_hash, version,
+                        repo, branch, source, content_hash, revision,
                         created_at, updated_at, deleted_at, superseded_by
                     ) VALUES (
                         :id, :title, :content, :memory_type, :workspace,
                         :project, :repo, :branch, :source, :content_hash,
-                        :version, :created_at, :updated_at, :deleted_at,
+                        :revision, :created_at, :updated_at, :deleted_at,
                         :superseded_by
                     )
                     """,
@@ -303,31 +347,35 @@ class MemBus:
                 )
                 created = True
 
-            for old_id in supersede_ids:
+            for old_id, expected_revision in targets.items():
                 if old_id == memory.id:
                     raise ValueError("a memory cannot supersede itself")
-                cursor = conn.execute(
-                    f"""
-                    UPDATE memories AS m SET superseded_by = ?,
-                        version = version + 1, updated_at = ?
-                    WHERE m.id = ? AND {_ACTIVE}
+                current = _get_required(conn, old_id)
+                # A lost response can be retried with the original reference.
+                if current.deleted_at is None and current.superseded_by == memory.id:
+                    continue
+                _require_revision(current, expected_revision)
+                if current.state != "active":
+                    raise RevisionConflict(current)
+                conn.execute(
+                    """
+                    UPDATE memories SET superseded_by = ?,
+                        revision = ?, updated_at = ? WHERE id = ?
                     """,
-                    (memory.id, now, old_id),
+                    (memory.id, _next_revision(conn), now, old_id),
                 )
-                if cursor.rowcount != 1:
-                    raise NotFound(old_id)
 
-        similar = self._similar_to(memory, ignore=set(supersede_ids))
+        similar = self._similar_to(memory, ignore=set(targets))
         return PutResult(
             memory=memory, created=created,
-            superseded=list(supersede_ids), similar=similar,
+            superseded=list(targets), similar=similar,
         )
 
     def update(
         self,
         memory_id: str,
         *,
-        expected_version: int,
+        expected_revision: int,
         title: str | None = UNSET,
         content: str = UNSET,
         memory_type: str = UNSET,
@@ -340,9 +388,10 @@ class MemBus:
         """Correct an active memory.
 
         Omitted fields are unchanged; ``None`` clears title, context, or
-        source. Raises VersionConflict if the memory moved on and
+        source. Raises RevisionConflict if the memory moved on and
         DuplicateMemory if the result would equal another active memory.
         """
+        _validate_revision(expected_revision)
         passed = {
             "title": title, "content": content, "memory_type": memory_type,
             "workspace": workspace, "project": project, "repo": repo,
@@ -359,15 +408,10 @@ class MemBus:
 
         # Read and write under the same BEGIN IMMEDIATE lock.
         with self._transaction() as conn:
-            row = conn.execute(
-                f"SELECT m.* FROM memories AS m WHERE m.id = ? AND {_ACTIVE}",
-                (memory_id,),
-            ).fetchone()
-            if row is None:
-                raise NotFound(memory_id)
-            current = _memory_from_row(row)
-            if current.version != expected_version:
-                raise VersionConflict(current)
+            current = _get_required(conn, memory_id)
+            _require_revision(current, expected_revision)
+            if current.state != "active":
+                raise RevisionConflict(current)
 
             values = _normalize_memory_values(**{
                 field: changes.get(field, getattr(current, field))
@@ -387,7 +431,7 @@ class MemBus:
 
             memory = replace(
                 current, **values,
-                version=current.version + 1, updated_at=_utc_now(),
+                revision=_next_revision(conn), updated_at=_utc_now(),
             )
             conn.execute(
                 """
@@ -396,49 +440,55 @@ class MemBus:
                     memory_type = :memory_type, workspace = :workspace,
                     project = :project, repo = :repo, branch = :branch,
                     source = :source, content_hash = :content_hash,
-                    version = :version, updated_at = :updated_at
+                    revision = :revision, updated_at = :updated_at
                 WHERE id = :id
                 """,
                 {**_memory_params(memory), "content_hash": digest},
             )
         return memory
 
-    def delete(self, memory_id: str) -> bool:
-        """Soft-delete; memories it superseded become active again."""
-        now = _utc_now()
+    def delete(self, memory_id: str, *, expected_revision: int) -> bool:
+        """Soft-delete without changing any predecessor's supersession."""
+        _validate_revision(expected_revision)
         with self._transaction() as conn:
-            cursor = conn.execute(
+            current = _get_required(conn, memory_id)
+            _require_revision(current, expected_revision)
+            if current.deleted_at is not None:
+                return False
+            now = _utc_now()
+            conn.execute(
                 """
                 UPDATE memories SET deleted_at = ?, updated_at = ?,
-                    version = version + 1
-                WHERE id = ? AND deleted_at IS NULL
+                    revision = ? WHERE id = ?
                 """,
-                (now, now, memory_id),
+                (now, now, _next_revision(conn), memory_id),
             )
-            if cursor.rowcount == 0:
-                return False
-            _release_superseded(conn, memory_id, now)
             return True
 
-    def restore(self, memory_id: str) -> bool:
-        """Undo delete. Active/missing IDs return False."""
-        now = _utc_now()
-        with self._transaction() as conn:
-            row = conn.execute(
-                "SELECT m.* FROM memories AS m "
-                "WHERE m.id = ? AND m.deleted_at IS NOT NULL",
-                (memory_id,),
-            ).fetchone()
-            if row is None:
-                return False
+    def restore(self, memory_id: str, *, expected_revision: int) -> bool:
+        """Make a memory current again unless a live successor replaces it.
 
-            successor = row["superseded_by"]
+        Clears deletion, and clears supersession whose successor was deleted
+        or purged. A memory superseded by a live successor stays superseded.
+        Returns False when there is nothing to restore.
+        """
+        _validate_revision(expected_revision)
+        with self._transaction() as conn:
+            current = _get_required(conn, memory_id)
+            _require_revision(current, expected_revision)
+            successor = current.superseded_by
             if successor is not None and conn.execute(
                 "SELECT 1 FROM memories WHERE id = ? AND deleted_at IS NULL",
                 (successor,),
             ).fetchone() is None:
                 successor = None
+            if current.deleted_at is None and successor == current.superseded_by:
+                return False
+
             if successor is None:
+                row = conn.execute(
+                    "SELECT content_hash FROM memories WHERE id = ?", (memory_id,),
+                ).fetchone()
                 clash = _active_clash(conn, row["content_hash"], memory_id)
                 if clash is not None:
                     raise DuplicateMemory(_memory_from_row(clash))
@@ -446,24 +496,36 @@ class MemBus:
             conn.execute(
                 """
                 UPDATE memories SET deleted_at = NULL, superseded_by = ?,
-                    updated_at = ?, version = version + 1
-                WHERE id = ?
+                    updated_at = ?, revision = ? WHERE id = ?
                 """,
-                (successor, now, memory_id),
+                (successor, _utc_now(), _next_revision(conn), memory_id),
             )
             return True
 
     def purge(self, memory_id: str) -> bool:
-        """Physically remove a memory in any state. Irreversible."""
-        now = _utc_now()
+        """Physically remove a memory and invalidate every synchronization cursor."""
         with self._transaction() as conn:
             cursor = conn.execute(
                 "DELETE FROM memories WHERE id = ?", (memory_id,)
             )
             if cursor.rowcount == 0:
                 return False
-            _release_superseded(conn, memory_id, now)
+            # Historical predecessor links remain superseded, even when the
+            # successor's content has been erased. They never revive implicitly.
+            conn.execute(
+                "UPDATE metadata SET generation = ? WHERE singleton = 1",
+                (uuid.uuid4().hex,),
+            )
             return True
+
+    def similar(self, memory_id: str) -> list[Memory]:
+        """Advisory near-duplicates of an active memory among compatible ones."""
+        memory = self.get(memory_id)
+        if memory is None:
+            raise NotFound(memory_id)
+        if memory.state != "active":
+            return []
+        return self._similar_to(memory, ignore=set())
 
     def put_alias(self, alias: str, canonical: str) -> None:
         alias = _normalize_text(alias)
@@ -517,19 +579,22 @@ class MemBus:
         _append_type_filter(where, params, normalized_types)
         _append_strict_context(where, params, context)
         if updated_since is not None:
+            # Wall-clock browsing filter for agents; sync is the exact feed.
             where.append("m.updated_at > ?")
             params.append(_normalize_timestamp(updated_since))
+        # `+` stops the planner from walking the whole revision index when the
+        # updated_at range index is the selective one.
+        order = "m.revision DESC" if updated_since is None else "+m.revision DESC"
         if cursor is not None:
-            after_time, after_id = _decode_cursor(cursor)
-            where.append("(m.updated_at < ? OR (m.updated_at = ? AND m.id < ?))")
-            params.extend((after_time, after_time, after_id))
+            where.append("m.revision < ?")
+            params.append(_decode_cursor(cursor))
 
         with self._connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT m.* FROM memories AS m
                 {'WHERE ' + ' AND '.join(where) if where else ''}
-                ORDER BY m.updated_at DESC, m.id DESC
+                ORDER BY {order}
                 LIMIT ?
                 """,
                 [*params, limit + 1],
@@ -537,10 +602,48 @@ class MemBus:
 
         memories = [_memory_from_row(row) for row in rows[:limit]]
         next_cursor = (
-            _encode_cursor(memories[-1].updated_at, memories[-1].id)
+            _encode_cursor(memories[-1].revision)
             if len(rows) > limit else None
         )
         return ListPage(memories=memories, next_cursor=next_cursor)
+
+    def sync(
+        self,
+        *,
+        after_revision: int = 0,
+        generation: str | None = None,
+        limit: int = 100,
+    ) -> SyncPage:
+        """Read latest states globally, including deleted/superseded memories.
+
+        Start at zero; persist generation together with next_revision. This is
+        eventual state synchronization, not a history or an atomic snapshot.
+        """
+        _validate_revision(after_revision, minimum=0)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        if generation is not None and (not isinstance(generation, str) or not generation):
+            raise ValueError("generation must be a nonempty string")
+        if after_revision and generation is None:
+            raise ValueError("generation is required when after_revision is nonzero")
+        with self._connection() as conn:
+            # Bind generation and rows to one read snapshot so concurrent purge
+            # cannot return post-purge rows with a pre-purge generation.
+            conn.execute("BEGIN")
+            metadata = conn.execute("SELECT * FROM metadata WHERE singleton = 1").fetchone()
+            if ((generation is not None and generation != metadata["generation"])
+                    or after_revision > metadata["revision"]):
+                raise SyncResetRequired(metadata["generation"])
+            rows = conn.execute(
+                "SELECT * FROM memories WHERE revision > ? ORDER BY revision LIMIT ?",
+                (after_revision, limit + 1),
+            ).fetchall()
+        memories = [_memory_from_row(row) for row in rows[:limit]]
+        return SyncPage(
+            memories=memories,
+            next_revision=memories[-1].revision if memories else after_revision,
+            generation=metadata["generation"], has_more=len(rows) > limit,
+        )
 
     def contexts(self) -> list[ContextCount]:
         """Distinct workspace/project/repo combinations of active memories."""
@@ -655,6 +758,10 @@ class MemBus:
         with contextlib.closing(self._connect()) as source:
             with contextlib.closing(sqlite3.connect(destination_path)) as target:
                 source.backup(target)
+                # A restored/copied backup starts a separate sync generation.
+                target.execute("UPDATE metadata SET generation = ? WHERE singleton = 1",
+                               (uuid.uuid4().hex,))
+                target.commit()
         return destination_path
 
     # ------------------------------------------------------------------
@@ -785,7 +892,7 @@ class MemBus:
             # worth it.
             return []
         return self._run_candidates(
-            source, where, params, order="m.updated_at DESC, m.id ASC",
+            source, where, params, order="m.revision DESC",
             context=context, types=types, limit=limit, strict=strict,
         )
 
@@ -962,47 +1069,42 @@ def _normalize_timestamp(value: str) -> str:
     )
 
 
-def _encode_cursor(updated_at: str, memory_id: str) -> str:
-    raw = json.dumps([updated_at, memory_id]).encode()
+def _validate_revision(value: int, *, minimum: int = 1) -> None:
+    if (not isinstance(value, int) or isinstance(value, bool)
+            or not minimum <= value <= 2**63 - 1):
+        raise ValueError(f"revision must be an integer between {minimum} and {2**63 - 1}")
+
+
+def _next_revision(conn: sqlite3.Connection) -> int:
+    conn.execute("UPDATE metadata SET revision = revision + 1 WHERE singleton = 1")
+    return int(conn.execute("SELECT revision FROM metadata WHERE singleton = 1").fetchone()[0])
+
+
+def _get_required(conn: sqlite3.Connection, memory_id: str) -> Memory:
+    row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if row is None:
+        raise NotFound(memory_id)
+    return _memory_from_row(row)
+
+
+def _require_revision(memory: Memory, expected_revision: int) -> None:
+    if memory.revision != expected_revision:
+        raise RevisionConflict(memory)
+
+
+def _encode_cursor(revision: int) -> str:
+    raw = json.dumps(revision).encode()
     return base64.urlsafe_b64encode(raw).decode()
 
 
-def _decode_cursor(cursor: str) -> tuple[str, str]:
+def _decode_cursor(cursor: str) -> int:
     try:
-        updated_at, memory_id = json.loads(base64.urlsafe_b64decode(cursor))
-        if isinstance(updated_at, str) and isinstance(memory_id, str):
-            return updated_at, memory_id
+        revision = json.loads(base64.urlsafe_b64decode(cursor))
+        _validate_revision(revision)
+        return revision
     except (ValueError, TypeError):
         pass
     raise ValueError("invalid cursor")
-
-
-def _release_superseded(
-    conn: sqlite3.Connection, successor_id: str, now: str,
-) -> None:
-    """Un-supersede memories whose successor was deleted or purged.
-
-    A revived memory that would now duplicate another active memory stays
-    superseded, by that memory, so the active-hash index stays unique.
-    """
-    rows = conn.execute(
-        "SELECT id, content_hash, deleted_at FROM memories "
-        "WHERE superseded_by = ?",
-        (successor_id,),
-    ).fetchall()
-    for row in rows:
-        replacement = None
-        if row["deleted_at"] is None:
-            clash = _active_clash(conn, row["content_hash"], row["id"])
-            replacement = clash["id"] if clash is not None else None
-        conn.execute(
-            """
-            UPDATE memories SET superseded_by = ?, updated_at = ?,
-                version = version + 1
-            WHERE id = ?
-            """,
-            (replacement, now, row["id"]),
-        )
 
 
 def _active_clash(

@@ -8,7 +8,7 @@ from threading import Barrier, Event
 
 import pytest
 
-from membus import MemBus, NotFound, VersionConflict
+from membus import MemBus, RevisionConflict
 from membus.doctor import run_doctor
 
 
@@ -62,6 +62,10 @@ def test_multiple_processes_can_write_one_store(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == (
             worker_count * writes_per_worker
         )
+    page = bus.sync()
+    revisions = [m.revision for m in page.memories]
+    assert revisions == sorted(set(revisions))
+    assert len(revisions) == worker_count * writes_per_worker
     assert run_doctor(bus)["ok"]
 
 
@@ -77,7 +81,7 @@ def test_parallel_identical_puts_converge_on_one_memory(tmp_path: Path) -> None:
     assert run_doctor(bus)["ok"]
 
 
-def test_concurrent_updates_with_same_version_conflict(tmp_path: Path) -> None:
+def test_concurrent_updates_with_same_revision_conflict(tmp_path: Path) -> None:
     bus = MemBus(tmp_path / "memory.db")
     memory = bus.put(title="Original", content="Original", memory_type="note").memory
     start = Barrier(2)
@@ -85,8 +89,8 @@ def test_concurrent_updates_with_same_version_conflict(tmp_path: Path) -> None:
     def attempt(**changes):
         start.wait(timeout=10)
         try:
-            return bus.update(memory.id, expected_version=1, **changes)
-        except VersionConflict as exc:
+            return bus.update(memory.id, expected_revision=1, **changes)
+        except RevisionConflict as exc:
             return exc
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -94,13 +98,13 @@ def test_concurrent_updates_with_same_version_conflict(tmp_path: Path) -> None:
         second = executor.submit(attempt, content="Content by B")
         outcomes = [first.result(timeout=15), second.result(timeout=15)]
 
-    conflicts = [o for o in outcomes if isinstance(o, VersionConflict)]
-    winners = [o for o in outcomes if not isinstance(o, VersionConflict)]
+    conflicts = [o for o in outcomes if isinstance(o, RevisionConflict)]
+    winners = [o for o in outcomes if not isinstance(o, RevisionConflict)]
     assert len(conflicts) == 1 and len(winners) == 1
     # The loser sees the winner's state and can retry on top of it.
-    assert conflicts[0].current.version == 2
+    assert conflicts[0].current.revision == 2
     retried = bus.update(
-        memory.id, expected_version=2,
+        memory.id, expected_revision=2,
         **({"content": "Content by B"} if winners[0].title == "Title by A"
            else {"title": "Title by A"}),
     )
@@ -133,16 +137,16 @@ def test_delete_between_read_and_update_cannot_report_ghost_update(
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
-            updater.update, memory.id, expected_version=1,
+            updater.update, memory.id, expected_revision=1,
             content="Should not be saved",
         )
         try:
             assert update_ready.wait(timeout=10)
-            assert deleter.delete(memory.id) is True
+            assert deleter.delete(memory.id, expected_revision=deleter.get(memory.id).revision) is True
         finally:
             continue_update.set()
 
-        with pytest.raises(NotFound):
+        with pytest.raises(RevisionConflict):
             future.result(timeout=15)
 
     stored = deleter.get(memory.id)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from membus import MemBus
+from membus import MemBus, MemoryRef
 from membus.cli import main
 from membus.doctor import run_doctor
 
@@ -27,6 +27,7 @@ def test_doctor_reports_healthy_database(tmp_path: Path) -> None:
     assert checks["fts_consistency"]["ok"] is True
     assert checks["trigram_consistency"]["ok"] is True
     assert checks["supersession"]["ok"] is True
+    assert checks["revisions"]["ok"] is True
     assert checks["write_transaction"]["ok"] is True
 
 
@@ -63,15 +64,15 @@ def test_doctor_detects_orphaned_index_rows(tmp_path: Path) -> None:
     assert checks["trigram_consistency"]["data"]["orphaned"] == 1
 
 
-def test_doctor_detects_dangling_supersession(tmp_path: Path) -> None:
+def test_doctor_detects_self_supersession(tmp_path: Path) -> None:
     bus = MemBus(tmp_path / "memory.db")
     memory = bus.put(content="points nowhere", memory_type="fact").memory
     with bus._transaction() as conn:
-        conn.execute("UPDATE memories SET superseded_by = 'mem_ghost' WHERE id = ?",
+        conn.execute("UPDATE memories SET superseded_by = id WHERE id = ?",
                      (memory.id,))
     checks = {c["name"]: c for c in run_doctor(bus)["checks"]}
     assert checks["supersession"]["ok"] is False
-    assert checks["supersession"]["data"]["dangling"] == 1
+    assert checks["supersession"]["data"]["self_links"] == 1
 
 
 def test_cli_doctor_uses_exit_code_and_json(tmp_path: Path, capsys) -> None:
@@ -85,12 +86,21 @@ def test_cli_doctor_uses_exit_code_and_json(tmp_path: Path, capsys) -> None:
     assert payload["database"] == str(path)
 
 
+def test_doctor_detects_revision_counter_behind_memory(tmp_path: Path) -> None:
+    bus = MemBus(tmp_path / "memory.db")
+    bus.put(content="revision metadata", memory_type="note")
+    with bus._transaction() as conn:
+        conn.execute("UPDATE metadata SET revision = 0")
+    checks = {c["name"]: c for c in run_doctor(bus)["checks"]}
+    assert not checks["revisions"]["ok"]
+
+
 def test_doctor_counts_active_memories_only(tmp_path: Path) -> None:
     bus = MemBus(tmp_path / "db.sqlite")
     deleted = bus.put(content="soft deleted", memory_type="note").memory
     old = bus.put(content="replaced", memory_type="note").memory
-    bus.put(content="replacement", memory_type="note", supersedes=[old.id])
-    assert bus.delete(deleted.id)
+    bus.put(content="replacement", memory_type="note", supersedes=[MemoryRef(old.id, old.revision)])
+    assert bus.delete(deleted.id, expected_revision=bus.get(deleted.id).revision)
 
     report = run_doctor(bus)
     assert report["ok"] is True

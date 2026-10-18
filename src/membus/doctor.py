@@ -23,6 +23,7 @@ def run_doctor(bus: MemBus) -> dict[str, Any]:
         ("fts_consistency", lambda: _check_index(bus, "fts_consistency", "memory_fts")),
         ("trigram_consistency", lambda: _check_index(bus, "trigram_consistency", "memory_trigram")),
         ("supersession", lambda: _check_supersession(bus)),
+        ("revisions", lambda: _check_revisions(bus)),
         ("write_transaction", lambda: _check_write_transaction(bus)),
     )
 
@@ -130,12 +131,15 @@ def _check_index(bus: MemBus, name: str, table: str) -> dict[str, Any]:
 
 def _check_supersession(bus: MemBus) -> dict[str, Any]:
     with bus._connection() as conn:
-        dangling = int(conn.execute(
+        missing = int(conn.execute(
             """
             SELECT COUNT(*) FROM memories AS m
             LEFT JOIN memories AS s ON s.id = m.superseded_by
             WHERE m.superseded_by IS NOT NULL AND s.id IS NULL
             """
+        ).fetchone()[0])
+        self_links = int(conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE superseded_by = id"
         ).fetchone()[0])
         duplicates = int(conn.execute(
             """
@@ -146,16 +150,31 @@ def _check_supersession(bus: MemBus) -> dict[str, Any]:
             )
             """
         ).fetchone()[0])
-    ok = dangling == 0 and duplicates == 0
+    # Purge intentionally leaves historical links to an erased successor.
+    ok = self_links == 0 and duplicates == 0
     return {
         "name": "supersession",
         "ok": ok,
         "detail": (
-            "no dangling supersession links or active duplicates"
+            "no self-supersession or active duplicates"
             if ok
-            else f"dangling={dangling}, active_duplicates={duplicates}"
+            else f"self_links={self_links}, active_duplicates={duplicates}"
         ),
-        "data": {"dangling": dangling, "active_duplicates": duplicates},
+        "data": {"missing_successors": missing, "self_links": self_links,
+                 "active_duplicates": duplicates},
+    }
+
+
+def _check_revisions(bus: MemBus) -> dict[str, Any]:
+    with bus._connection() as conn:
+        row = conn.execute(
+            "SELECT revision, generation, (SELECT COALESCE(MAX(revision), 0) FROM memories) AS latest "
+            "FROM metadata WHERE singleton = 1"
+        ).fetchone()
+    ok = row is not None and bool(row["generation"]) and row["revision"] >= row["latest"]
+    return {
+        "name": "revisions", "ok": ok,
+        "detail": "global counter covers all memory revisions" if ok else "invalid revision metadata",
     }
 
 

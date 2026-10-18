@@ -7,9 +7,12 @@ from .core import (
     ListPage,
     MemBus,
     Memory,
+    MemoryRef,
     NotFound,
     PutResult,
-    VersionConflict,
+    RevisionConflict,
+    SyncPage,
+    SyncResetRequired,
 )
 
 __all__ = [
@@ -19,7 +22,10 @@ __all__ = [
     "ListPage",
     "MemBus",
     "Memory",
+    "MemoryRef",
     "NotFound",
     "PutResult",
-    "VersionConflict",
+    "RevisionConflict",
+    "SyncPage",
+    "SyncResetRequired",
 ]

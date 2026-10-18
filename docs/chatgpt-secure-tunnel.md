@@ -51,6 +51,10 @@ tunnel-client
 
 No MemBus HTTP server or extra authentication layer is required.
 
+For a long-running service shared by local clients and the tunnel, MemBus also
+supports Streamable HTTP. Run `membus-mcp --transport streamable-http` and point
+the tunnel at its MCP server URL. See [MCP HTTP deployment](mcp-http.md).
+
 ## Trust
 
 The user trusts every client they connect, including ChatGPT Web. Tunneled clients get full read/write access, same as local agents; there is no read-only or append-only mode. Retry-created duplicates are already absorbed by idempotent `memory_put` (content-hash dedup).

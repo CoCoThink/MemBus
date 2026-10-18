@@ -88,7 +88,8 @@ MCP / CLI
     │
     ▼
  SQLite
- ├─ memories   (version, content_hash, superseded_by)
+ ├─ memories   (revision, content_hash, superseded_by)
+ ├─ metadata   (revision counter, sync generation)
  ├─ aliases
  ├─ memory_fts      (porter)
  └─ memory_trigram  (trigram)

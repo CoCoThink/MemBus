@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from membus import MemBus
+from membus import MemBus, MemoryRef
 from membus.core import _content_hash, _normalize_memory_values
 
 
@@ -152,7 +152,10 @@ def _seed(bus: MemBus, payload: dict[str, Any]) -> tuple[dict[str, str], list[st
             continue
 
         sources[key] = entry["memory"]
-        supersedes = [key_to_id[k] for k in entry.get("supersedes", ())]
+        supersedes = [
+            MemoryRef(key_to_id[k], bus.get(key_to_id[k]).revision)
+            for k in entry.get("supersedes", ())
+        ]
         key_to_id[key] = bus.put(**entry["memory"], supersedes=supersedes).memory.id
     return key_to_id, failed_checks
 
@@ -242,23 +245,26 @@ def _seed_synthetic(bus: MemBus, count: int) -> None:
         ).replace("+00:00", "Z")
         return {
             **values, "id": f"mem_{uuid.UUID(int=rng.getrandbits(128)).hex}",
-            "content_hash": _content_hash(values), "version": 1,
+            "content_hash": _content_hash(values), "revision": base_revision + n + 1,
             "created_at": stamp, "updated_at": stamp,
         }
 
     insert = """
         INSERT OR IGNORE INTO memories (
             id, title, content, memory_type, workspace, project, repo,
-            branch, source, content_hash, version, created_at, updated_at
+            branch, source, content_hash, revision, created_at, updated_at
         ) VALUES (
             :id, :title, :content, :memory_type, :workspace, :project, :repo,
-            :branch, :source, :content_hash, :version, :created_at, :updated_at
+            :branch, :source, :content_hash, :revision, :created_at, :updated_at
         )"""
     with bus._transaction() as conn:
+        base_revision = conn.execute("SELECT revision FROM metadata WHERE singleton = 1").fetchone()[0]
         for start in range(0, count, 5_000):
             conn.executemany(
                 insert, [row(n) for n in range(start, min(count, start + 5_000))]
             )
+        conn.execute("UPDATE metadata SET revision = ? WHERE singleton = 1",
+                     (base_revision + count,))
 
 
 def _percentile(values: list[float], percentile: int) -> float:

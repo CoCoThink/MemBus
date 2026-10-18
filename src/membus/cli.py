@@ -12,8 +12,10 @@ from typing import Any, Sequence
 from .core import (
     DuplicateMemory,
     MemBus,
+    MemoryRef,
     NotFound,
-    VersionConflict,
+    RevisionConflict,
+    SyncResetRequired,
 )
 from .doctor import run_doctor
 
@@ -50,8 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     put = sub.add_parser("put", help="Store a memory.")
     _add_memory_fields(put, require_core=True)
     put.add_argument(
-        "--supersedes", action="append", default=[], metavar="MEMORY_ID",
-        help="Mark this active memory as replaced (repeatable).",
+        "--supersedes", action="append", default=[], metavar="MEMORY_ID:REVISION",
+        type=_memory_ref,
+        help="Replace an active memory at its last-read revision (repeatable).",
     )
 
     get = sub.add_parser("get", help="Get one memory by ID (any state).")
@@ -62,13 +65,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Correct a memory. Empty string clears a context field/source.",
     )
     update.add_argument("memory_id")
-    update.add_argument("--expected-version", type=int, required=True)
+    update.add_argument("--expected-revision", type=int, required=True)
     _add_memory_fields(update, require_core=False)
 
     delete = sub.add_parser("delete", help="Soft-delete a memory.")
     delete.add_argument("memory_id")
+    delete.add_argument("--expected-revision", type=int, required=True)
     restore = sub.add_parser("restore", help="Restore a deleted memory.")
     restore.add_argument("memory_id")
+    restore.add_argument("--expected-revision", type=int, required=True)
     purge = sub.add_parser(
         "purge", help="Irreversibly remove a memory (e.g. a stored secret).",
     )
@@ -89,10 +94,15 @@ def build_parser() -> argparse.ArgumentParser:
     list_ = sub.add_parser("list", help="List memories applicable to a context.")
     _add_context_fields(list_)
     list_.add_argument("--type", dest="types", action="append", default=[])
-    list_.add_argument("--since", dest="updated_since", metavar="TIMESTAMP")
+    list_.add_argument("--updated-since")
     list_.add_argument("--include-inactive", action="store_true")
     list_.add_argument("--limit", type=int, default=50)
     list_.add_argument("--cursor")
+
+    sync = sub.add_parser("sync", help="Sync latest states globally, including inactive memories.")
+    sync.add_argument("--after-revision", type=int, default=0)
+    sync.add_argument("--generation")
+    sync.add_argument("--limit", type=int, default=100)
 
     sub.add_parser("contexts", help="List workspace/project/repo in use.")
 
@@ -109,11 +119,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except NotFound as exc:
         _print_json({"error": "not_found", "id": exc.memory_id})
         return 1
-    except VersionConflict as exc:
+    except RevisionConflict as exc:
         _print_json({
-            "error": "version_conflict",
+            "error": "revision_conflict",
             "current": exc.current.to_dict(),
         })
+        return 1
+    except SyncResetRequired as exc:
+        _print_json({"error": "sync_reset_required", "generation": exc.generation,
+                     "hint": str(exc)})
         return 1
     except DuplicateMemory as exc:
         _print_json({
@@ -154,18 +168,20 @@ def _run(args: argparse.Namespace) -> int:
         changes = {k: (v if v != "" or k in ("content", "memory_type") else None)
                    for k, v in changes.items()}
         _print_json(bus.update(
-            args.memory_id, expected_version=args.expected_version, **changes,
+            args.memory_id, expected_revision=args.expected_revision, **changes,
         ).to_dict())
         return 0
 
     if args.command == "delete":
-        deleted = bus.delete(args.memory_id)
+        deleted = bus.delete(args.memory_id, expected_revision=args.expected_revision)
         _print_json({"id": args.memory_id, "deleted": deleted})
         return 0 if deleted else 1
 
     if args.command == "restore":
-        restored = bus.restore(args.memory_id)
-        _print_json({"id": args.memory_id, "restored": restored})
+        restored = bus.restore(args.memory_id, expected_revision=args.expected_revision)
+        similar = bus.similar(args.memory_id) if restored else []
+        _print_json({"id": args.memory_id, "restored": restored,
+                     "similar": [memory.to_dict() for memory in similar]})
         return 0 if restored else 1
 
     if args.command == "purge":
@@ -210,6 +226,11 @@ def _run(args: argparse.Namespace) -> int:
         _print_json(page.to_dict())
         return 0
 
+    if args.command == "sync":
+        _print_json(bus.sync(after_revision=args.after_revision,
+                             generation=args.generation, limit=args.limit).to_dict())
+        return 0
+
     if args.command == "contexts":
         _print_json({"contexts": [asdict(c) for c in bus.contexts()]})
         return 0
@@ -220,6 +241,17 @@ def _run(args: argparse.Namespace) -> int:
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")
+
+
+def _memory_ref(value: str) -> MemoryRef:
+    try:
+        memory_id, revision = value.rsplit(":", 1)
+        expected_revision = int(revision)
+        if not memory_id or expected_revision < 1:
+            raise ValueError
+        return MemoryRef(memory_id, expected_revision)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected MEMORY_ID:REVISION with revision >= 1") from None
 
 
 def entrypoint() -> None:

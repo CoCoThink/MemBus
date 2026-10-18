@@ -4,7 +4,7 @@
 
 Claude Code, Codex, Cursor, ChatGPT, and other MCP clients share one SQLite store: each agent can load what applies to its current context, see what others recorded, and keep shared memory current without duplicating or silently overwriting it. No agent vendor is the system of record.
 
-> **Status:** V1 is implemented. Design rationale and measured trade-offs are in [Architecture → Design decisions](docs/architecture.md#design-decisions).
+> **Status:** Implemented with schema 2. Design rationale and measured trade-offs are in [Architecture → Design decisions](docs/architecture.md#design-decisions).
 
 ## Core
 
@@ -17,20 +17,23 @@ MCP / CLI
     ▼
  SQLite
  ├─ memories
+ ├─ metadata    (global revision counter, sync generation)
  ├─ aliases
  ├─ memory_fts      (words, Porter stemming)
  └─ memory_trigram  (substrings, Chinese)
 ```
 
-A memory has a title, content (≤ 4000 chars), a type (`fact | decision | preference | procedure | incident | note`), optional `workspace / project / repo / branch` context, an optional `source` label, a `version`, UTC timestamps, and a lifecycle state:
+A memory has a title, content (≤ 4000 chars), a type (`fact | decision | preference | procedure | incident | note`), optional `workspace / project / repo / branch` context, an optional `source` label, a globally allocated `revision`, UTC timestamps, and a lifecycle state:
 
 ```text
-active ──update (expected_version)──► active
-active ──put(supersedes=[id])──────► superseded   (the world changed)
+active ──update (expected_revision)──► active
+active ──put(supersedes=[{id, expected_revision}])──► superseded
 active ──delete────────────────────► deleted ──restore──► active
 ```
 
 Identical content in the same context is stored once: `put` is idempotent and also returns `similar` near-matches so the agent can update or supersede instead of duplicating.
+
+`update`, `delete`, `restore`, and every supersedes target require the revision from the last read. Deleting or purging a successor leaves older memories superseded; `restore` on such a predecessor makes it current again, as it does for a deleted memory. Superseding with the same replacement again succeeds without changing revisions.
 
 ## Retrieval
 
@@ -49,13 +52,16 @@ query
         Top-K over active memories
 ```
 
-`list` enumerates memories that apply to a context, newest first, with `updated_since` for "what changed since my last session". All lexical; no LLM, embedding model, or hosted service.
+`list` browses memories that apply to a context, newest revision first; `updated_since` gives agents a best-effort "what changed here since then". `sync` reads latest states globally in ascending revision order, including deleted and superseded memories. Timestamps are informational; clock drift cannot hide changes. All lexical; no LLM, embedding model, or hosted service.
+
+For a cache, start `sync` at revision zero. Apply each result by ID and save `generation` and `next_revision` together. Continue while `has_more`, then reuse that pair for later polls. Apply context/type filters locally so scope changes can remove cached entries. Intermediate edits may be coalesced; this provides eventual state convergence. Purge changes the generation, requiring clients to discard their caches and restart.
 
 ## MCP tools
 
 ```text
 memory_search     memory_get       memory_delete
 memory_list       memory_put       memory_restore
+memory_sync
 memory_contexts   memory_update
 ```
 
@@ -79,20 +85,33 @@ membus --db ./memory.db search "generated/client.ts" \
   --project payment --repo payment-api
 
 membus --db ./memory.db list --project payment --repo payment-api
+membus --db ./memory.db sync
+membus --db ./memory.db sync --after-revision 42 --generation GENERATION_FROM_LAST_PAGE
 membus --db ./memory.db backup ./backup.db
 ```
 
-Run MCP:
+Run MCP over stdio (the default):
 
 ```bash
 MEMBUS_DB=./memory.db membus-mcp
 ```
 
+Or start a shared Streamable HTTP server:
+
+```bash
+membus-mcp --transport streamable-http --host 127.0.0.1 --port 8301 \
+  --db ./memory.db
+```
+
+Connect MCP clients to `http://127.0.0.1:8301/mcp`. Startup options also accept
+environment variables for service deployments; see [MCP HTTP deployment](docs/mcp-http.md).
+
 ## Reliability
 
 - SQLite WAL, busy timeout, bounded retry, `BEGIN IMMEDIATE`
-- optimistic concurrency (`expected_version`) for updates
-- content-hash unique index for idempotent writes
+- global revisions allocated inside write transactions for sync and optimistic concurrency
+- content-hash unique index and state-based supersedes retries
+- generation-bound sync positions, invalidated by purge
 - FTS synchronization triggers
 - SQLite backup API, `membus doctor`, CLI-only `purge`
 - multi-process writer stress tests, MCP round-trip tests
@@ -120,7 +139,7 @@ See:
 
 - [Requirements](docs/requirements.md)
 - [Architecture](docs/architecture.md)
-- [V1 technical specification](docs/v1-technical-spec.md)
+- [Technical specification](docs/technical-spec.md)
 - [Agent protocol](docs/agent-protocol.md)
 - [Retrieval evaluation](docs/evaluation.md)
 - [ChatGPT Secure MCP Tunnel integration](docs/chatgpt-secure-tunnel.md)
