@@ -55,7 +55,7 @@ query
         Top-K
 ```
 
-Python and CLI searches default to broad context preference (`strict=False`): conflicting memories can be fallback candidates. Set `strict=True` (or CLI `--strict`) to return only applicable memories, rejecting conflicts and more-specific memories where query context is missing. MCP search defaults to `strict=True` for agent safety; opt out with `strict=False` for exploration. Strict mode does not implement access control.
+Python, CLI, and MCP searches all default to broad context preference (`strict=False`): matching context ranks first, and conflicting memories may be returned as fallback. Set `strict=True` (or CLI `--strict`) to return only compatible memories, rejecting conflicts and more-specific memories where query context is missing. Broad results are not automatically applicable to the current task; check their context before acting. Neither mode implements access control.
 
 ## MCP tools
 

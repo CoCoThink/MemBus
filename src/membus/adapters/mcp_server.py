@@ -92,9 +92,9 @@ def build_server(db_path: str | Path | None = None):
         branch: str | None = None,
         types: list[str] | None = None,
         limit: int = 10,
-        strict: bool = True,
+        strict: bool = False,
     ) -> dict[str, Any]:
-        """Search memories with exact matching, aliases, FTS5, and context isolation."""
+        """Search memories; strict=True restricts results to compatible context."""
 
         results = bus.search(
             query,

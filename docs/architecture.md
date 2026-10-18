@@ -71,7 +71,7 @@ then FTS BM25
 Top-K
 ```
 
-With `strict=False`, context remains a preference; conflicting candidates may be returned. With `strict=True`, filtering occurs in SQL before LIMIT and requires stored context values to be either absent or equal to explicitly supplied query dimensions. Missing query dimensions accept only absent stored dimensions. MCP defaults to strict; Python/CLI default to broad. This is applicability filtering, not ACL.
+With `strict=False`, context remains a preference; conflicting candidates may be returned. With `strict=True`, filtering occurs in SQL before LIMIT and requires stored context values to be either absent or equal to explicitly supplied query dimensions. Missing query dimensions accept only absent stored dimensions. Python, CLI, and MCP all default to broad (`strict=False`), with strict filtering opt-in. This is applicability filtering, not ACL.
 
 There is no numeric scoring layer, recency signal, title boost, explain mode, or multi-query fusion. Context uses discrete preference tiers only.
 

@@ -68,17 +68,27 @@ async def test_mcp_tool_surface_and_round_trip(tmp_path: Path) -> None:
         strict_results = await client.call_tool(
             "memory_search",
             {"query": "generated/client.ts", "project": "payment",
-             "repo": "payment-api"},
+             "repo": "payment-api", "strict": True},
         )
         assert foreign_id not in {
             m["id"] for m in strict_results.structured_content["results"]
         }
-        broad = await client.call_tool(
+        # Omitted strict now means broad search in MCP as in Python/CLI.
+        default_broad = await client.call_tool(
+            "memory_search",
+            {"query": "generated/client.ts", "project": "payment"},
+        )
+        assert foreign_id in {
+            m["id"] for m in default_broad.structured_content["results"]
+        }
+        explicit_broad = await client.call_tool(
             "memory_search",
             {"query": "generated/client.ts", "project": "payment",
              "strict": False},
         )
-        assert foreign_id in {m["id"] for m in broad.structured_content["results"]}
+        assert [m["id"] for m in default_broad.structured_content["results"]] == [
+            m["id"] for m in explicit_broad.structured_content["results"]
+        ]
         deleted = await client.call_tool("memory_delete", {"memory_id": memory_id})
         assert deleted.structured_content["deleted"]
         restored = await client.call_tool("memory_restore", {"memory_id": memory_id})

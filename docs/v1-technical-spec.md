@@ -58,7 +58,7 @@ branch
 
 Branch context requires repo context.
 
-Broad mode (`strict=False`) uses preference tiers with fallback. Strict mode (`strict=True`) excludes conflicting and narrower-than-query memories before top-K candidate limits. Python/CLI default to broad; MCP defaults to strict. Neither implements authentication or authorization.
+Broad mode (`strict=False`) uses preference tiers with fallback. Strict mode (`strict=True`) excludes conflicting and narrower-than-query memories before top-K candidate limits. Python, CLI, and MCP all default to broad; strict filtering is opt-in. Neither implements authentication or authorization.
 
 ## Transactions
 
