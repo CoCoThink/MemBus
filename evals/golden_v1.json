@@ -307,7 +307,7 @@
       "expected": [
         "payment_pg17"
       ],
-      "forbidden": [
+      "lower_priority": [
         "analytics_pg15",
         "personal_payment_sqlite"
       ]
@@ -322,7 +322,7 @@
       "expected": [
         "analytics_pg15"
       ],
-      "forbidden": [
+      "lower_priority": [
         "payment_pg17"
       ]
     },
@@ -336,7 +336,7 @@
       "expected": [
         "payment_pg17"
       ],
-      "forbidden": [
+      "lower_priority": [
         "personal_payment_sqlite"
       ]
     },
@@ -397,30 +397,64 @@
       ]
     },
     {
-      "name": "missing workspace excludes workspace-specific memory",
+      "name": "missing workspace broadens retrieval",
       "query": "context-containment-marker",
       "context": {
         "project": "payment"
       },
       "expected": [
-        "context_project_fallback"
-      ],
-      "forbidden": [
+        "context_project_fallback",
         "context_personal_specific"
       ]
     },
     {
-      "name": "missing repo excludes repo-specific memory",
+      "name": "missing repo broadens retrieval",
       "query": "repo-containment-marker",
       "context": {
         "workspace": "work",
         "project": "payment"
       },
       "expected": [
-        "repo_project_fallback"
-      ],
-      "forbidden": [
+        "repo_project_fallback",
         "repo_specific_rule"
+      ]
+    },
+    {
+      "name": "workspace context prefers matching memory",
+      "query": "context-containment-marker",
+      "context": {
+        "workspace": "personal",
+        "project": "payment"
+      },
+      "expected": [
+        "context_personal_specific"
+      ],
+      "lower_priority": [
+        "context_project_fallback"
+      ]
+    },
+    {
+      "name": "repo context prefers more specific memory",
+      "query": "repo-containment-marker",
+      "context": {
+        "workspace": "work",
+        "project": "payment",
+        "repo": "payment-api"
+      },
+      "expected": [
+        "repo_specific_rule"
+      ],
+      "lower_priority": [
+        "repo_project_fallback"
+      ]
+    },
+    {
+      "name": "no context supports cross-project recall",
+      "query": "PostgreSQL version production database",
+      "context": {},
+      "expected": [
+        "payment_pg17",
+        "analytics_pg15"
       ]
     }
   ]
