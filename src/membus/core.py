@@ -251,15 +251,25 @@ class MemBus:
             else []
         )
 
-        results = list(exact)
-        seen = {memory.id for memory in exact}
-        for memory in fts:
-            if memory.id not in seen:
+        exact_preferred, exact_fallback = _partition_context(exact, context)
+        fts_preferred, fts_fallback = _partition_context(fts, context)
+
+        results: list[Memory] = []
+        seen: set[str] = set()
+        for group in (
+            exact_preferred,
+            fts_preferred,
+            exact_fallback,
+            fts_fallback,
+        ):
+            for memory in group:
+                if memory.id in seen:
+                    continue
                 results.append(memory)
                 seen.add(memory.id)
-            if len(results) >= limit:
-                break
-        return results[:limit]
+                if len(results) >= limit:
+                    return results
+        return results
 
     def backup(self, destination: str | Path) -> Path:
         destination_path = Path(destination)
@@ -334,7 +344,8 @@ class MemBus:
             """
         ]
         params: list[Any] = [query, query]
-        _append_filters(where, params, context=context, types=types)
+        _append_type_filter(where, params, types)
+        context_order, context_params = _context_order(context)
 
         with self._connection() as conn:
             rows = conn.execute(
@@ -342,10 +353,10 @@ class MemBus:
                 SELECT m.*
                 FROM memories AS m
                 WHERE {' AND '.join(where)}
-                ORDER BY m.id ASC
+                ORDER BY {context_order}, m.id ASC
                 LIMIT ?
                 """,
-                [*params, limit],
+                [*params, *context_params, limit],
             ).fetchall()
         return [_memory_from_row(row) for row in rows]
 
@@ -359,7 +370,8 @@ class MemBus:
     ) -> list[Memory]:
         where = ["memory_fts MATCH ?"]
         params: list[Any] = [match_query]
-        _append_filters(where, params, context=context, types=types)
+        _append_type_filter(where, params, types)
+        context_order, context_params = _context_order(context)
 
         with self._connection() as conn:
             rows = conn.execute(
@@ -368,10 +380,10 @@ class MemBus:
                 FROM memory_fts
                 JOIN memories AS m ON m.id = memory_fts.memory_id
                 WHERE {' AND '.join(where)}
-                ORDER BY bm25(memory_fts) ASC, m.id ASC
+                ORDER BY {context_order}, bm25(memory_fts) ASC, m.id ASC
                 LIMIT ?
                 """,
-                [*params, limit],
+                [*params, *context_params, limit],
             ).fetchall()
         return [_memory_from_row(row) for row in rows]
 
@@ -461,24 +473,77 @@ def _validate_context(values: dict[str, Any]) -> None:
         raise ValueError("branch requires repo")
 
 
-def _append_filters(
+def _append_type_filter(
     where: list[str],
     params: list[Any],
-    *,
-    context: dict[str, str | None],
     types: tuple[str, ...],
 ) -> None:
-    for column in _CONTEXT_FIELDS:
-        value = context[column]
-        where.append(
-            f"(m.{column} IS NULL OR (? IS NOT NULL AND m.{column} = ?))"
-        )
-        params.extend((value, value))
-
     if types:
         placeholders = ",".join("?" for _ in types)
         where.append(f"m.memory_type IN ({placeholders})")
         params.extend(types)
+
+
+def _context_order(
+    context: dict[str, str | None],
+) -> tuple[str, list[Any]]:
+    conflict_terms: list[str] = []
+    match_terms: list[str] = []
+    params: list[Any] = []
+
+    for column in _CONTEXT_FIELDS:
+        value = context[column]
+        if value is None:
+            continue
+        conflict_terms.append(
+            f"CASE WHEN m.{column} IS NOT NULL AND m.{column} <> ? THEN 1 ELSE 0 END"
+        )
+        params.append(value)
+
+    conflict_param_count = len(params)
+
+    for column in _CONTEXT_FIELDS:
+        value = context[column]
+        if value is None:
+            continue
+        match_terms.append(
+            f"CASE WHEN m.{column} = ? THEN 1 ELSE 0 END"
+        )
+        params.append(value)
+
+    conflicts = " + ".join(conflict_terms) if conflict_terms else "0"
+    matches = " + ".join(match_terms) if match_terms else "0"
+
+    # Keep the explicit variable so the parameter order is obvious:
+    # conflict placeholders first, then match placeholders.
+    assert conflict_param_count <= len(params)
+    return f"({conflicts}) ASC, ({matches}) DESC", params
+
+
+def _partition_context(
+    memories: Iterable[Memory],
+    context: dict[str, str | None],
+) -> tuple[list[Memory], list[Memory]]:
+    preferred: list[Memory] = []
+    fallback: list[Memory] = []
+
+    for memory in memories:
+        target = fallback if _context_conflicts(memory, context) else preferred
+        target.append(memory)
+
+    return preferred, fallback
+
+
+def _context_conflicts(
+    memory: Memory,
+    context: dict[str, str | None],
+) -> bool:
+    return any(
+        context[column] is not None
+        and getattr(memory, column) is not None
+        and getattr(memory, column) != context[column]
+        for column in _CONTEXT_FIELDS
+    )
 
 
 def _normalize_text(value: str) -> str:
