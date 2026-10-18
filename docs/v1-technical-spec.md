@@ -54,7 +54,7 @@ branch
 
 Branch context requires repo context.
 
-A stored row is eligible only when each non-empty stored context dimension is present and equal in the query (`memory_context ⊆ query_context`). Missing query context therefore excludes more-specific memories.
+Context is not an eligibility boundary. Query-provided context creates discrete preference tiers: memories with no conflicts are returned first, conflicting memories remain fallback candidates, and missing query context dimensions do not filter results.
 
 ## Transactions
 
@@ -78,10 +78,15 @@ query
   └─ tokens -> aliases -> FTS5
           │
           ▼
-      SQL context filter
+   context preference tiers
           │
           ▼
- exact first, then BM25
+preferred context first
+fallback context second
+          │
+          ▼
+ exact first within tier
+ then BM25
           │
           ▼
         Top-K
