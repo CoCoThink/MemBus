@@ -13,7 +13,7 @@ Provide one user-owned local memory store shared by multiple AI clients.
 - Exact identifiers can be retrieved without embeddings.
 - FTS5/BM25 provides lexical retrieval.
 - Aliases provide deterministic query expansion.
-- Workspace/project/repo/branch context is enforced by containment: every stored context value must be present and equal in the query.
+- Workspace/project/repo/branch context is a retrieval preference: matching context ranks first, conflicting context remains fallback, and missing query context broadens retrieval.
 - The runtime requires no LLM, hosted service, or embedding model.
 - Writes remain safe under the tested multi-process SQLite workload.
 
@@ -78,7 +78,7 @@ Repository tooling tracks:
 - Recall@10
 - MRR
 - zero-result rate
-- wrong-context hit rate
+- context-preference error rate
 - P50/P95 latency
 
 ## Non-goals
