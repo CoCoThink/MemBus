@@ -128,9 +128,9 @@ Backups receive a fresh generation so restoring or independently opening one req
 
 ## Browsing and retrieval
 
-`list` applies strict context compatibility and optional type and `updated_since` filters, adding inactive records when requested. `updated_since` compares wall-clock `updated_at` (assigned inside the write transaction) and is a browsing aid for agents without a saved sync position, not a synchronization guarantee. It sorts by descending revision with an opaque cursor containing the last revision. Concurrent updates can move records ahead of a browse cursor; use sync for complete cache loading and polling.
+`list` discovers memories with no context required. For each supplied context field it keeps rows whose stored value is NULL or equals the supplied value; omitted query fields add no filter, so a partial query can retrieve narrower-scoped memories. Without context all active memories are browsable. Returned memories are candidates: callers must check scope before assuming applicability. Query-only branch without repo is valid, while writes still require repo for branch. Optional type and `updated_since` filters apply, with inactive records added on request. `updated_since` compares wall-clock `updated_at` (assigned inside the write transaction) and is a browsing aid, not a synchronization guarantee. Results use descending revision and an opaque cursor containing the last revision. Concurrent updates can move records ahead of a browse cursor; use sync for complete cache loading and polling.
 
-Search uses the existing lexical pipeline, active memories only. Context compatibility sorts first, followed by exact substring matches, word FTS/BM25, Chinese trigram matches, and bounded word-part/bigram fallbacks. Exact matches use descending revision as their recency signal. Context filtering happens before LIMIT. See [architecture](architecture.md#retrieval) and [evaluation](evaluation.md).
+Search uses the existing lexical pipeline, active memories only. With strict=False, fewer known context conflicts rank first, followed by exact substring matches, word FTS/BM25, Chinese trigram matches, and bounded word-part/bigram fallbacks. strict=True retains direct-applicability filtering, where stored non-NULL values in omitted query dimensions are excluded. Exact matches use descending revision as their recency signal. Strict context filtering happens before LIMIT. See [architecture](architecture.md#retrieval) and [evaluation](evaluation.md).
 
 ## Adapters and errors
 
@@ -165,4 +165,4 @@ CLI emits JSON. Exit 0 means success; 1 covers domain conflicts, missing records
 
 Doctor checks WAL, SQLite integrity, FTS/trigram consistency, self-supersession, active duplicates, global revision metadata, and write readiness. Missing successors are reported as information because purge permits them.
 
-Tests cover multi-process revision allocation, stale mutations, atomic rollback, supersedes retries, clock reversal/equal timestamps, paging through concurrent state changes, generation mismatch, and CLI/MCP round trips. Retrieval quality gates remain in the golden evaluation tooling.
+Tests cover multi-process revision allocation, stale mutations, atomic rollback, supersedes retries, clock reversal/equal timestamps, paging through concurrent state changes, generation mismatch, CLI/MCP round trips, and cross-session scoped-memory discovery without full context. Retrieval quality gates remain in the golden evaluation tooling.
