@@ -21,7 +21,7 @@ Trusting a client is not trusting everything it writes: an agent may have read i
 - The runtime requires no LLM, hosted service, or embedding model.
 - Exact identifiers (paths, symbols, issue IDs) are retrievable without embeddings.
 - Lexical retrieval covers English morphology (stemming) and Chinese text without a segmenter.
-- Agents can enumerate memories applicable to a context without guessing a query.
+- Agents can discover saved memories without knowing their original context, then verify which memories apply to the current task.
 - Agents can synchronize latest states since a revision, including soft deletions, supersessions, and scope changes. Intermediate revisions need not be retained.
 - Concurrent agents cannot silently overwrite each other's updates.
 - Retried or repeated identical writes do not create duplicates.
@@ -64,7 +64,7 @@ update     correct an active memory; requires expected_revision
 delete     soft-delete at expected_revision; leaves predecessors superseded
 restore    make current again at expected_revision unless a live successor exists
 search     ranked lexical retrieval
-list       browse by context/type/updated_since, newest revision first, with cursor
+list       browse with optional known context fields (omitted = unconstrained), newest revision first, with cursor
 sync       latest states globally, oldest unseen revision first
 contexts   enumerate known workspace/project/repo values
 purge      CLI only: irreversible removal; rotate sync generation
@@ -79,7 +79,7 @@ Candidate sources, all over active memories:
 3. Chinese 3-gram matching (trigram index)
 4. last resorts while results are short: word-part substrings (deploy → deployment) and separated Han bigrams
 
-Ordering: context tier first (compatible before conflicting), then source order, then within-source rank (exact: newest first; FTS: BM25).
+Ordering: known-context conflict tier first (no conflicts before conflicts), then source order, then within-source rank (exact: newest first; FTS: BM25). Strict search is opt-in and requires applicability for all stored dimensions.
 
 No public score or explanation object.
 
