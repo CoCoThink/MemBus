@@ -28,11 +28,11 @@ V1 target additions:
 - natural-language questions whose stopwords must not crowd out the real terms
 - superseded memories: the successor is expected, the predecessor must not appear
 - duplicate puts: identical content in the same context yields one memory
-- `list` context applicability (global + matching returned, conflicting/narrower excluded, inactive opt-in)
+- `list` discovery with no/partial context (global + matching + narrower scopes returned, known conflicts excluded, inactive opt-in)
 
-Dataset format: a `memories` entry may carry `supersedes: [keys]` or be `{key, same_as}` (re-puts that memory and must get the same ID back); a query may carry `absent: [keys]` (superseded-leak check) and `strict`; `list_cases` check `MemBus.list` with `expected` / `absent` keys.
+Dataset format: a `memories` entry may carry `supersedes: [keys]` or be `{key, same_as}` (re-puts that memory and must get the same ID back); a query may carry `absent: [keys]` (superseded-leak check) and `strict`; `list_cases` check `MemBus.list` with `expected` / `absent` keys, including context-free write/read discovery.
 
-Grow the set from real retrieval failures toward ≥ 100 queries; a 26-query self-authored set at 1.0 recall proves little.
+Grow the set from real retrieval failures toward ≥ 100 queries; a small self-authored set at 1.0 recall proves little. Keep a separate write → retrieve regression for memories saved under a fully scoped context and later requested without it.
 
 ## Isolation
 

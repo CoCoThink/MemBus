@@ -66,11 +66,13 @@ workspace set  -> workspace-specific
 none set       -> global
 ```
 
-A memory is **compatible** with a query context when every stored dimension is absent or equal to the supplied query dimension, and no stored dimension is set where the query omits it. A memory **conflicts** when some stored dimension differs from a supplied query dimension.
+A memory is **directly applicable** when every stored dimension is absent or equals the query dimension; a stored value in an omitted query dimension is not directly applicable. A memory has a **known conflict** when a stored value differs from a supplied query dimension. Omitted query dimensions are unknown for discovery, not proof of applicability.
 
-- `search` defaults to broad: compatible first, conflicting as fallback. `strict=True` returns compatible only.
-- `list` always returns compatible only: it answers "what applies here".
-- `contexts` returns the distinct workspace/project/repo values in use so agents reuse names instead of fragmenting context.
+- `list` discovers memories: no context lists all active memories; supplied dimensions accept matching values or NULL, and omitted dimensions do not filter. It includes narrower scopes as candidates, not automatically applicable instructions.
+- `search` defaults to broad: memories without known conflicts rank first, conflicting memories are fallback. `strict=True` returns directly applicable memories only (unknown query dimensions require stored NULL).
+- `contexts` returns distinct workspace/project/repo values for naming, not as a prerequisite to retrieval; it does not list branches.
+
+This intentionally changes the old strict `list` contract for CLI, Python and MCP together. Agents must check stored scope before applying a recalled memory. It also allows querying a branch without supplying a repo, although writing branch-scoped memories still requires a repo.
 
 For non-coding use, `workspace` is the general domain (`personal`, `health`, `writing`, ...); project/repo/branch stay empty.
 
@@ -82,12 +84,12 @@ query
   │                       1-2 Han chars: instr scan; 1-2 ASCII chars: word index only
   ├─ word FTS ─────────── tokens → drop stopwords → aliases → memory_fts (porter) BM25
   ├─ Chinese ──────────── Han 3-grams → memory_trigram MATCH, BM25
-  └─ last resorts, only while compatible results < limit:
+  └─ last resorts, only while nonconflicting results < limit:
         word parts (≥ 5 chars) → memory_trigram, BM25      deploy → deployment
         Han 2-grams → instr scan, ≥ 2 hits                  支付部署
           │
           ▼
- context tier: compatible │ conflicting (broad only)
+ context tier: no known conflicts │ conflicting (broad only)
           │
           ▼
  within tier: exact (newest first) → word → Chinese → word parts → bigrams
@@ -139,7 +141,7 @@ Recorded from the design review; each entry is the problem, the chosen answer, a
 
 | Problem | Decision | Rejected / deferred |
 |---|---|---|
-| Agents need both context browsing and reliable cache synchronization | `list` for browsing (with best-effort `updated_since` for agents without persistent state); unfiltered ascending-revision `sync` for latest states | timestamp watermarks as the sync contract, event logs, frozen snapshots |
+| Agents need both discoverable memories and reliable cache synchronization | `list` for discovery with partial or absent context (with best-effort `updated_since`); unfiltered ascending-revision `sync` for latest states | strict context required before browsing, timestamp watermarks as the sync contract, event logs, frozen snapshots |
 | Sync instructions in every agent's server instructions, though only programs with persistent state can use them | sync protocol lives in the `memory_sync` tool description only | — |
 | Deleting a wrong successor left its predecessor superseded with no way back | explicit `restore` of the predecessor reactivates it when its successor is deleted/purged | implicit revival on delete (silently resurrects outdated memories) |
 | Context name fragmentation (`payment-api` vs `org/payment-api`) | `contexts` tool + naming convention in server instructions | automatic context inference from cwd (wrong for tunneled clients) |

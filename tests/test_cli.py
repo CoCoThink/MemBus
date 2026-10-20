@@ -44,6 +44,31 @@ def test_cli_put_search_get_delete_and_backup(tmp_path: Path, capsys) -> None:
     assert code == 1 and missing["error"] == "not_found"
 
 
+def test_cli_list_discovers_scoped_memory_without_full_context(
+    tmp_path: Path, capsys,
+) -> None:
+    db = tmp_path / "memory.db"
+    code, created = run(
+        capsys, db, "put", "--title", "WASON memory",
+        "--content", "WASON belongs to this submission workspace.",
+        "--memory-type", "note",
+        "--workspace", "A200V3-提交", "--project", "WASON",
+        "--repo", "service", "--branch", "main",
+    )
+    assert code == 0
+    memory_id = created["memory"]["id"]
+
+    for args in ((), ("--workspace", "A200V3-提交"),
+                 ("--project", "WASON"), ("--branch", "main")):
+        code, page = run(capsys, db, "list", *args)
+        assert code == 0
+        assert memory_id in [memory["id"] for memory in page["memories"]]
+
+    code, page = run(capsys, db, "list", "--workspace", "another-workspace")
+    assert code == 0
+    assert memory_id not in [memory["id"] for memory in page["memories"]]
+
+
 def test_cli_strict_and_restore(tmp_path: Path, capsys) -> None:
     db = tmp_path / "memory.db"
     _, created = run(capsys, db, "put", "--content", "cli-scope-marker",

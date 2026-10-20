@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=int, default=10)
     search.add_argument("--strict", action="store_true")
 
-    list_ = sub.add_parser("list", help="List memories applicable to a context.")
+    list_ = sub.add_parser("list", help="Browse memories; omitted context fields match any scope.")
     _add_context_fields(list_)
     list_.add_argument("--type", dest="types", action="append", default=[])
     list_.add_argument("--updated-since")

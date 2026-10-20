@@ -121,6 +121,44 @@ async def test_mcp_round_trip(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_mcp_recalls_scoped_memory_in_a_new_session(tmp_path: Path) -> None:
+    db = tmp_path / "memory.db"
+    async with Client(build_server(db)) as client:
+        stored = (await client.call_tool("memory_put", {
+            "title": "WASON submission",
+            "content": "WASON deployment requires a release review.",
+            "memory_type": "procedure",
+            "workspace": "A200V3-提交",
+            "project": "WASON", "repo": "service", "branch": "main",
+        })).structured_content["memory"]
+    # The next agent session does not know the original four context fields.
+    async with Client(build_server(db)) as client:
+        for context in ({}, {"workspace": "A200V3-提交"}, {"project": "WASON"},
+                        {"branch": "main"}):
+            page = (await client.call_tool("memory_list", context)).structured_content
+            assert stored["id"] in ids(page, "memories")
+
+        wrong = (await client.call_tool("memory_list", {
+            "workspace": "another-workspace",
+        })).structured_content
+        assert stored["id"] not in ids(wrong, "memories")
+
+        found = (await client.call_tool("memory_search", {
+            "query": "WASON",
+        })).structured_content
+        assert stored["id"] in ids(found)
+        strict = (await client.call_tool("memory_search", {
+            "query": "WASON", "strict": True,
+        })).structured_content
+        assert stored["id"] not in ids(strict)
+        exact = (await client.call_tool("memory_search", {
+            "query": "WASON", "strict": True, "workspace": "A200V3-提交",
+            "project": "WASON", "repo": "service", "branch": "main",
+        })).structured_content
+        assert stored["id"] in ids(exact)
+
+
+@pytest.mark.anyio
 async def test_mcp_strict_and_broad_search(tmp_path: Path) -> None:
     server = build_server(tmp_path / "memory.db")
     async with Client(server, raise_exceptions=False) as client:
