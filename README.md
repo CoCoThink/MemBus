@@ -46,13 +46,13 @@ query
      Han bigrams
           │
           ▼
- compatible context first, conflicting as fallback (strict=True: compatible only)
+ no known context conflicts first; strict=True requires direct applicability
           │
           ▼
         Top-K over active memories
 ```
 
-`list` browses memories that apply to a context, newest revision first; `updated_since` gives agents a best-effort "what changed here since then". `sync` reads latest states globally in ascending revision order, including deleted and superseded memories. Timestamps are informational; clock drift cannot hide changes. All lexical; no LLM, embedding model, or hosted service.
+`list` discovers memories even if the original context is unknown: with no context it browses all active memories; supplied context fields match identical or global (NULL) values, while omitted fields are unconstrained. These are candidates, not necessarily rules for the current task. Agents must check stored scope before applying a memory. `updated_since` gives a best-effort "what changed among these memories since then". `sync` reads latest states globally in ascending revision order, including deleted and superseded memories. Timestamps are informational; clock drift cannot hide changes. All lexical; no LLM, embedding model, or hosted service.
 
 For a cache, start `sync` at revision zero. Apply each result by ID and save `generation` and `next_revision` together. Continue while `has_more`, then reuse that pair for later polls. Apply context/type filters locally so scope changes can remove cached entries. Intermediate edits may be coalesced; this provides eventual state convergence. Purge changes the generation, requiring clients to discard their caches and restart.
 
@@ -84,7 +84,8 @@ membus --db ./memory.db put \
 membus --db ./memory.db search "generated/client.ts" \
   --project payment --repo payment-api
 
-membus --db ./memory.db list --project payment --repo payment-api
+membus --db ./memory.db list                   # browse all active memories
+membus --db ./memory.db list --project payment  # partial context finds repo memories
 membus --db ./memory.db sync
 membus --db ./memory.db sync --after-revision 42 --generation GENERATION_FROM_LAST_PAGE
 membus --db ./memory.db backup ./backup.db
