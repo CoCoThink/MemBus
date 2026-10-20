@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Lexical-first retrieval baseline for MemBus V1: context preference, supersession, idempotent puts, morphology, Chinese, and list applicability.",
+  "description": "Lexical-first retrieval baseline for MemBus V1: context preference, supersession, idempotent puts, morphology, Chinese, and list discovery with incomplete context.",
   "aliases": [
     {
       "alias": "pg",
@@ -627,7 +627,38 @@
   ],
   "list_cases": [
     {
-      "name": "workspace/project applicability",
+      "name": "no context discovers all active memories",
+      "context": {},
+      "expected": [
+        "python_uv",
+        "generated_client",
+        "bug_18472",
+        "settlement_idempotency",
+        "payment_pool_incident",
+        "payment_deploy",
+        "payment_pg17",
+        "analytics_pg15",
+        "personal_payment_sqlite",
+        "claude_code_rule",
+        "no_kubernetes",
+        "websocket_failure",
+        "redis_runbook",
+        "context_project_fallback",
+        "context_personal_specific",
+        "repo_project_fallback",
+        "repo_specific_rule",
+        "zh_client_generation",
+        "zh_payment_deployment",
+        "release_cadence_new",
+        "quarter_freeze",
+        "retry_backoff"
+      ],
+      "absent": [
+        "release_cadence_old"
+      ]
+    },
+    {
+      "name": "workspace/project discovery includes narrower repo scope",
       "context": {
         "workspace": "work",
         "project": "payment"
@@ -645,13 +676,13 @@
         "repo_project_fallback",
         "release_cadence_new",
         "quarter_freeze",
-        "retry_backoff"
-      ],
-      "absent": [
+        "retry_backoff",
         "generated_client",
         "payment_deploy",
         "websocket_failure",
-        "repo_specific_rule",
+        "repo_specific_rule"
+      ],
+      "absent": [
         "analytics_pg15",
         "personal_payment_sqlite",
         "context_personal_specific",
@@ -661,7 +692,7 @@
       ]
     },
     {
-      "name": "repo adds repo-specific memories",
+      "name": "repo filter retains matching repo memories",
       "context": {
         "workspace": "work",
         "project": "payment",
