@@ -107,6 +107,17 @@ membus-mcp --transport streamable-http --host 127.0.0.1 --port 8301 \
 Connect MCP clients to `http://127.0.0.1:8301/mcp`. Startup options also accept
 environment variables for service deployments; see [MCP HTTP deployment](docs/mcp-http.md).
 
+## Codex prompt-time recall
+
+Codex agents do not always choose to call memory tools. Install the optional
+`membus-codex-hook` command as a user-level Codex `UserPromptSubmit` hook
+to retrieve a few relevant memory candidates automatically before each turn.
+It reads the same SQLite store as MCP, never writes memories, and fails open.
+MCP remains available for deeper search, retrieval by ID, and deliberate writes.
+
+See [Codex hook design and setup](docs/codex-hooks.md). The hook is opt-in;
+installing MemBus does not edit `~/.codex/hooks.json`.
+
 ## Reliability
 
 - SQLite WAL, busy timeout, bounded retry, `BEGIN IMMEDIATE`
