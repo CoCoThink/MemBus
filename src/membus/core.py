@@ -568,7 +568,7 @@ class MemBus:
         limit: int = 50,
         cursor: str | None = None,
     ) -> ListPage:
-        """Memories applicable to a context, newest change first."""
+        """Browse active memories by known context fields, newest change first."""
         if not 1 <= limit <= 200:
             raise ValueError("limit must be between 1 and 200")
         context = _context_from(workspace, project, repo, branch)
@@ -577,7 +577,7 @@ class MemBus:
         where: list[str] = [] if include_inactive else [_ACTIVE]
         params: list[Any] = []
         _append_type_filter(where, params, normalized_types)
-        _append_strict_context(where, params, context)
+        _append_known_context(where, params, context)
         if updated_since is not None:
             # Wall-clock browsing filter for agents; sync is the exact feed.
             where.append("m.updated_at > ?")
@@ -1190,7 +1190,8 @@ def _context_from(
         "repo": _clean_optional(repo),
         "branch": _clean_optional(branch),
     }
-    _validate_context(context)
+    # Read queries may know just one dimension (even branch without repo).
+    # Stored memories still enforce branch-requires-repo at write time.
     return context
 
 
@@ -1221,6 +1222,19 @@ def _append_strict_context(
         if value is None:
             where.append(f"m.{column} IS NULL")
         else:
+            where.append(f"(m.{column} IS NULL OR m.{column} = ?)")
+            params.append(value)
+
+
+def _append_known_context(
+    where: list[str],
+    params: list[Any],
+    context: dict[str, str | None],
+) -> None:
+    """For discovery, omitted query dimensions are unknown, not NULL."""
+    for column in _CONTEXT_FIELDS:
+        value = context[column]
+        if value is not None:
             where.append(f"(m.{column} IS NULL OR m.{column} = ?)")
             params.append(value)
 
