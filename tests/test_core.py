@@ -462,22 +462,41 @@ def test_update_rejects_superseded_and_deleted(bus: MemBus) -> None:
 # ----------------------------------------------------------------------
 
 
-def test_list_returns_only_applicable_context(bus: MemBus) -> None:
+def test_list_discovers_memories_with_partial_or_no_context(bus: MemBus) -> None:
     glob = put(bus, content="global rule")
     ws = put(bus, content="workspace rule", workspace="work")
     proj = put(bus, content="project rule", workspace="work", project="payment")
     repo = put(bus, content="repo rule", workspace="work", project="payment",
                repo="api")
-    other = put(bus, content="other project rule", workspace="work",
-                project="analytics")
+    branch = put(bus, content="branch rule", workspace="work", project="payment",
+                 repo="api", branch="release")
+    other_branch = put(bus, content="different branch rule", workspace="work",
+                       project="payment", repo="api", branch="main")
+    other_project = put(bus, content="other project rule", workspace="work",
+                        project="analytics")
+    other_workspace = put(bus, content="other workspace rule", workspace="personal",
+                          project="payment")
 
-    assert ids(bus.list().memories) == [glob.id]
-    got = {m.id for m in bus.list(workspace="work", project="payment").memories}
-    assert got == {glob.id, ws.id, proj.id}
-    got = {m.id for m in bus.list(workspace="work", project="payment",
-                                  repo="api").memories}
-    assert got == {glob.id, ws.id, proj.id, repo.id}
-    assert other.id not in got
+    # Unknown context does not hide records whose scope is narrower.
+    assert set(ids(bus.list().memories)) == {
+        glob.id, ws.id, proj.id, repo.id, branch.id, other_branch.id,
+        other_project.id, other_workspace.id,
+    }
+    assert set(ids(bus.list(workspace="work").memories)) == {
+        glob.id, ws.id, proj.id, repo.id, branch.id, other_branch.id,
+        other_project.id,
+    }
+    assert set(ids(bus.list(workspace="work", project="payment").memories)) == {
+        glob.id, ws.id, proj.id, repo.id, branch.id, other_branch.id,
+    }
+    assert set(ids(bus.list(workspace="work", project="payment",
+                            repo="api", branch="release").memories)) == {
+        glob.id, ws.id, proj.id, repo.id, branch.id,
+    }
+    # Read filters can use a branch on its own; writes still require a repo.
+    assert branch.id in ids(bus.list(branch="release").memories)
+    assert other_branch.id not in ids(bus.list(branch="release").memories)
+    assert other_workspace.id in ids(bus.list(project="payment").memories)
 
 
 def test_list_type_filter_and_ordering(bus: MemBus) -> None:
