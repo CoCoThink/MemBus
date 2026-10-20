@@ -25,6 +25,7 @@ dev = [
 [project.scripts]
 membus = "membus.cli:entrypoint"
 membus-mcp = "membus.adapters.mcp_server:main"
+membus-codex-hook = "membus.adapters.codex_hook:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
